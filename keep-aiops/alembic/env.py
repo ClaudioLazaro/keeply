@@ -32,6 +32,11 @@ try:  # rca models land with the RCA slice (M2)
 except ModuleNotFoundError:  # pragma: no cover
     pass
 
+try:  # feedback models land with the human-feedback slice (M2)
+    import aiops_api.modules.feedback.models  # noqa: F401
+except ModuleNotFoundError:  # pragma: no cover
+    pass
+
 try:  # knowledge models land with the knowledge-engine slice (M2)
     import aiops_api.modules.knowledge.models  # noqa: F401
 except ModuleNotFoundError:  # pragma: no cover

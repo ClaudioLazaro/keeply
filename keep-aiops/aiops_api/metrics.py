@@ -56,6 +56,14 @@ mcp_tool_calls = Counter(
     namespace=METRIC_NAMESPACE,
 )
 
+# Human feedback on investigations (label: rating — bounded enum useful|not_useful)
+investigation_feedback = Counter(
+    "investigation_feedback_total",
+    "Human feedback submitted on investigations (useful / not_useful).",
+    labelnames=("rating",),
+    namespace=METRIC_NAMESPACE,
+)
+
 # Evidence gaps (tool call denied by policy or failed) — drives the evidence-gap panel
 evidence_gaps = Counter(
     "evidence_gaps_total",

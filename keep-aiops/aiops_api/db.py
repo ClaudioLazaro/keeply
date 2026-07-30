@@ -42,6 +42,7 @@ def init_db() -> None:
         return
     # Import model modules so their tables register on SQLModel.metadata.
     import aiops_api.modules.event_bridge.models  # noqa: F401
+    import aiops_api.modules.feedback.models  # noqa: F401
     import aiops_api.modules.knowledge.models  # noqa: F401
     import aiops_api.modules.orchestrator.models  # noqa: F401
     import aiops_api.modules.policy.models  # noqa: F401

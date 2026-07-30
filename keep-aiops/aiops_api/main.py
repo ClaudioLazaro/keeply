@@ -50,11 +50,13 @@ def create_app() -> FastAPI:
 
     # Module routers are registered below as modules land (M0 spike):
     from aiops_api.modules.event_bridge.router import router as event_bridge_router
+    from aiops_api.modules.feedback.router import router as feedback_router
     from aiops_api.modules.knowledge.router import router as knowledge_router
     from aiops_api.modules.orchestrator.router import router as orchestrator_router
     from aiops_api.modules.policy.router import router as policy_router
 
     app.include_router(event_bridge_router)
+    app.include_router(feedback_router)
     app.include_router(knowledge_router)
     app.include_router(orchestrator_router)
     app.include_router(policy_router)
