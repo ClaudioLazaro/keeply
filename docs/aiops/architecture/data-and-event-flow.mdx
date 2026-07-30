@@ -1,0 +1,73 @@
+---
+title: "Data and Event Flow"
+description: "End-to-end investigation data path and domain event contracts."
+---
+
+## Investigation data flow
+
+1. Alert ingested in Keep → `process_event` → dedupe/enrich/correlate
+2. Incident created/updated → outbox event emitted ([ADR-0004](/aiops/adr/0004-domain-event-bridge))
+3. Event-bridge delivers to AI Orchestrator
+4. Orchestrator creates **Investigation** (idempotent)
+5. Context Builder reads Keep APIs (incident, alerts, topology, history)
+6. Knowledge Engine retrieves runbooks / prior RCAs
+7. Coordinator plans; specialists gather **Evidence** via MCP
+8. RCA Engine scores **Hypotheses** → **RCAReport**
+9. Decision Engine proposes remediations
+10. Policy Engine classifies each action
+11. Results written to Keep timeline/enrichments
+12. Optional Execution Engine runs approved actions
+13. On resolve → Postmortem + re-index for learning
+
+## Event catalog
+
+| Event | Producer | Consumer(s) |
+|-------|----------|-------------|
+| `alert.processed` | Keep process_event | Optional triage/index |
+| `incident.created` | Keep IncidentBl / RulesEngine | Orchestrator |
+| `incident.updated` | Keep IncidentBl | Orchestrator (replan) |
+| `incident.resolved` | Keep IncidentBl | Postmortem agent |
+| `investigation.*` | Orchestrator | UI / Slack |
+| `approval.requested` / `approval.decided` | Policy/Exec | Collab + UI |
+| `action.executed` / `action.failed` | Execution Engine | Audit + Keep timeline |
+| `knowledge.indexed` | Knowledge Engine | Metrics |
+
+## Event envelope (contract sketch)
+
+```json
+{
+  "specversion": "1.0",
+  "id": "uuid",
+  "type": "incident.created",
+  "source": "keep-api",
+  "time": "2026-07-27T00:00:00Z",
+  "tenantid": "tenant-uuid",
+  "subject": "incident-uuid",
+  "data": {
+    "incident_id": "…",
+    "severity": "high",
+    "status": "firing",
+    "fingerprint": "…"
+  }
+}
+```
+
+Align with CloudEvents where practical.
+
+## Transport
+
+| Stage | Choice |
+|-------|--------|
+| MVP | Redis Streams and/or signed webhooks |
+| Later | Kafka / NATS via same bridge interface |
+| UI notifications | Existing Pusher/Soketi channels; optional `investigation-update` |
+
+## Failure behavior
+
+| Failure | Behavior |
+|---------|----------|
+| AI plane down | Keep continues; events backlog/replay |
+| LLM timeout | Fallback model or evidence-only report |
+| MCP tool down | Record evidence gap; continue other branches |
+| Policy engine down | Fail-closed for mutate; configurable read allow |
+| Duplicate events | Idempotency keys on investigation create |

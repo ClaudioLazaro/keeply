@@ -1,0 +1,61 @@
+---
+title: "ADR-0006: Modular Monolith AI Plane First"
+description: "Ship the AI control plane as a modular monolith first; extract microservices only when scaling, security, or ownership pressure demands it."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / Platform / Product |
+
+## Context
+
+We adopted the product direction: **evolve Keep into a new AI-native product, compatible with current Keep**, using:
+
+- Keep foundation as system of record
+- AI control plane for investigation/RCA/agents/RAG/policy/execution
+- MCP as the tool bus
+- Event-driven integration
+
+The remaining delivery question is service granularity. Premature microservice decomposition increases operational and coordination cost for a 3–6 engineer team. Embedding everything in `keep-api` harms compatibility and blast-radius isolation.
+
+## Decision
+
+1. Implement the AI control plane as a **modular monolith** (`aiops-api`) with internal modules:
+   - orchestrator, context-builder, rca, knowledge client, decision, policy, execution client, event-bridge consumer
+2. Deploy **MCP Gateway + MCP servers** as separate processes from day one (security boundary)
+3. Keep Knowledge vector DB / object storage as infrastructure dependencies, not necessarily separate app services at start
+4. Extract a module into its own deployable only when at least one is true:
+   - independent scaling need
+   - independent failure domain / security boundary need
+   - independent release cadence owned by a dedicated team
+5. Product packaging remains **one evolved Keep product**; deployment may include multiple units without breaking Keep compatibility
+
+This ADR complements [ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane): sidecar/control-plane for product isolation, modular monolith for maintainable delivery.
+
+## Alternatives considered
+
+1. **Many microservices immediately** — clean on paper, heavy to run. Rejected for M0–M3.
+2. **Everything inside keep-api** — simpler deploy, poor isolation/compatibility risk. Rejected.
+3. **Separate repo per module** — slows iteration. Rejected early; prefer one `keep-aiops` monorepo.
+
+## Consequences
+
+### Positive
+
+- Faster iteration with clear module boundaries
+- Lower ops burden
+- Easier refactor path to services later
+- Aligns with maintainability and modern platform practice
+
+### Negative / trade-offs
+
+- Requires module discipline (no spaghetti inside `aiops-api`)
+- Some scaling headroom deferred until extraction triggers are hit
+
+## References
+
+- [PRD-001](/aiops/prd/001-ai-native-aiops-platform)
+- [Architecture overview](/aiops/architecture/overview)
+- [Milestones](/aiops/roadmap/milestones)

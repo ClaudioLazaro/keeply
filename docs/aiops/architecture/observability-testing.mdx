@@ -1,0 +1,42 @@
+---
+title: "Observability and Testing"
+description: "OpenTelemetry strategy, SLOs, and test pyramid for the AIOps plane."
+---
+
+## Observability
+
+Reuse Keep's OpenTelemetry posture and extend it.
+
+| Signal | Guidance |
+|--------|----------|
+| **Traces** | Root span per investigation; children for agent, tool, LLM |
+| **Metrics** | Investigation latency, tool errors, approval lag, $/incident, auto-remediation success |
+| **Logs** | Structured JSON, PII-redacted, correlate via `investigation_id` |
+| **LLM telemetry** | Sampled prompts/responses to Langfuse/Phoenix (or equivalent) |
+| **Audit** | All mutate tool calls in immutable store + dashboard |
+
+### Example SLOs
+
+- Time to first evidence
+- RCA usefulness (human thumbs / eval score)
+- MTTA/MTTR delta vs baseline
+- Policy deny false-positive rate (too strict) vs escape rate (too loose)
+
+## Testing strategy
+
+| Layer | What |
+|-------|------|
+| Contract | Keep event schemas, OpenAPI, MCP tool schemas |
+| Policy unit | Deny-by-default for every mutate tool |
+| Agent eval | Golden incidents → expected hypotheses (offline) |
+| Sandbox e2e | kind + LocalStack + synthetic outages |
+| Chaos | Kill MCP mid-run; assert fail-safe |
+| Security | Prompt injection attempting destructive tools must block |
+| Load | Burst incidents; measure queue lag and cost caps |
+| UI e2e | Investigate → approve → execute → postmortem |
+
+### Quality bar for MVP
+
+- Golden-set eval harness in CI
+- ≥ 60% “useful RCA draft” on curated scenarios before broad rollout
+- No mutate tools enabled in default tenant policy

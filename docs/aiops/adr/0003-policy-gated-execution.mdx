@@ -1,0 +1,48 @@
+---
+title: "ADR-0003: Policy-Gated Execution"
+description: "LLMs never execute destructive actions directly. Policy Engine classifies actions into read-only, suggest-only, approval-required, or automated."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / Security / SRE |
+
+## Context
+
+Autonomous remediation is valuable and dangerous. Competitors differentiate on safe automation. A single unconstrained tool call (e.g. delete namespace) is an unacceptable failure mode.
+
+## Decision
+
+1. **LLMs never call cloud/APIs directly** — only MCP Gateway after Policy Engine
+2. Every tool has an execution class: `read_only`, `suggest_only`, `approval_required`, `auto`
+3. Defaults: **deny mutate**, **fail-closed** if policy engine is unavailable
+4. Policies are **tenant-, environment-, and role-aware** (compose with Keep RBAC)
+5. MVP ships in **suggest-only**; auto only for allowlisted actions in non-prod first
+6. Approvals are first-class records with expiry, actor, and policy rule id
+
+## Alternatives considered
+
+1. **Trust the model with tool access** — rejected
+2. **Human approval for every read** — too slow; rejected
+3. **Static allowlist only (no engine)** — OK for spike, insufficient for multi-tenant prod
+
+## Consequences
+
+### Positive
+
+- Clear trust ladder: shadow → suggest → assisted → auto
+- Compliance-friendly audit trail
+- Enables gradual automation without rewriting agents
+
+### Negative / trade-offs
+
+- More moving parts before first auto-remediation
+- Policy authoring UX required
+- Risk of approval fatigue if too many gates
+
+## References
+
+- [Security, tenancy, scale](/aiops/architecture/security-tenancy-scale)
+- [MVP](/aiops/roadmap/mvp)

@@ -1,0 +1,65 @@
+---
+title: "Security, Tenancy, and Scale"
+description: "Security model, multi-tenancy rules, scalability targets, and failure modes."
+---
+
+## Security model
+
+| Layer | Control |
+|-------|---------|
+| AuthN | Keep JWT / API keys; short-lived investigation tokens |
+| AuthZ | Keep RBAC + Policy Engine action classes |
+| Tool safety | Default deny mutate; per-agent tool allowlists |
+| Data | Tenant isolation on every query; no cross-tenant RAG |
+| Secrets | Never placed in prompts; injected at MCP edge |
+| Prompt injection | Treat tool/doc output as untrusted; extra checks before mutate |
+| Supply chain | Signed MCP images, SBOM, admission policies |
+| Audit | Immutable action log |
+| Break-glass | Per-tenant kill switch for AI plane |
+
+Hard rule ([ADR-0003](/aiops/adr/0003-policy-gated-execution)): **LLMs never call cloud APIs directly.**
+
+### Policy modes
+
+| Mode | Behavior |
+|------|----------|
+| `read_only` | Evidence gathering only |
+| `suggest_only` | RCA + remediation text; no execute |
+| `approval_required` | Execute after human approval |
+| `auto` | Allowlisted actions only; env-aware |
+
+## Multi-tenancy
+
+- Propagate Keep `tenant_id` on events, API calls, vector filters, and audits
+- Per-tenant model keys, budgets, retention, and policy packs
+- Soft isolation first (shared cluster); dedicated AI plane for enterprise tier later
+- Prod policies stricter than lab/dev
+
+## Scalability
+
+| Bottleneck | Strategy |
+|------------|----------|
+| Investigation storms | Per-tenant concurrency + severity admission control |
+| LLM cost/latency | Context cache; smaller triage models; step budgets |
+| MCP rate limits | Token buckets; backoff; circuit breakers |
+| Context window | Hierarchical summaries + RAG |
+| Keep OLTP | AIOps DB and vector store are separate |
+
+### MVP targets
+
+- ≥ 50 concurrent investigations
+- p50 time-to-first-evidence &lt; 3 minutes
+- p50 draft RCA &lt; 15 minutes for common K8s/app failures
+
+## Failure scenarios
+
+| Failure | Expected behavior |
+|---------|-------------------|
+| LLM timeout | Retry/fallback; degrade to evidence-only |
+| MCP outage | Evidence gap; continue other branches |
+| Keep API down | Queue writes; continue from cached context |
+| Policy engine down | Fail-closed mutate |
+| Partial execution | Compensation / rollback notes on incident |
+| Duplicate triggers | Idempotent investigation create |
+| Runaway agent | Max steps/cost/wall-clock abort |
+| Poisoned RAG docs | Allowlisted sources + mandatory citations |

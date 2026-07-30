@@ -1,0 +1,48 @@
+---
+title: "ADR-0002: MCP as Tool Bus"
+description: "Agents may only invoke external capabilities through an MCP Gateway with authz, policy, and audit."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / AI Platform |
+
+## Context
+
+Agents need Kubernetes, cloud, observability, GitOps, and collaboration tools. Ad-hoc provider SDKs inside each agent create inconsistent auth, weak audit, and unsafe mutate paths.
+
+Model Context Protocol (MCP) provides a standard tool interface. Keep already has a rich provider method surface that can be wrapped as MCP tools over time.
+
+## Decision
+
+1. **MCP is the only tool bus** for agent runtimes
+2. All calls go through an **MCP Gateway** that enforces authn/z, rate limits, schema validation, redaction, and audit
+3. Domain MCP servers (k8s, aws, obs, gitops, collab, knowledge) are separate deployables
+4. Keep providers may be adapted into MCP tools; agents do not call Keep provider Python classes in-process
+
+## Alternatives considered
+
+1. **Direct provider SDK calls from agents** — fast, unsafe, unauditable. Rejected.
+2. **Keep workflows as the only tool layer** — good for deterministic automation, weak for interactive investigation loops. Keep as complementary execution path.
+3. **Custom internal RPC tool API** — reinventing MCP. Rejected.
+
+## Consequences
+
+### Positive
+
+- Uniform security and audit
+- Swappable tool servers; vendor-neutral
+- Clear mapping from read vs mutate tool classes
+
+### Negative / trade-offs
+
+- Gateway is a critical path dependency for investigations
+- Need schema/version discipline for tools
+- Initial wrapping cost for existing Keep providers
+
+## References
+
+- [Agents and MCP](/aiops/architecture/agents-and-mcp)
+- [ADR-0003](/aiops/adr/0003-policy-gated-execution)

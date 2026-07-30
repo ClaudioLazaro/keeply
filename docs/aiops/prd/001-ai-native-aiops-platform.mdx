@@ -1,0 +1,206 @@
+---
+title: "PRD-001: AI-Native AIOps Platform"
+description: "Product requirements for evolving Keep into an AI-first incident response platform with autonomous investigation, RCA, MCP tools, RAG, and policy-gated remediation."
+---
+
+| Field | Value |
+|-------|-------|
+| **ID** | PRD-001 |
+| **Status** | Adopted |
+| **Owners** | Platform / AI / SRE |
+| **Horizon** | 12–18 months |
+| **Team size** | 3–6 engineers |
+| **Related** | [ADR index](/aiops/adr/index), [Architecture](/aiops/architecture/overview), [MVP](/aiops/roadmap/mvp) |
+
+## 1. Summary
+
+**Evolve Keep into a new AI-native Incident Response product** — capable of autonomous investigation, root-cause analysis, multi-agent collaboration, knowledge retrieval, runbook/remediation planning, controlled execution, and postmortem generation — while remaining **compatible with current Keep**.
+
+This is product evolution, not a fork:
+
+- Keep's current foundation remains the system of record for alerts, incidents, auth, workflows, and integrations
+- New AI capabilities are additive modules/services in the same product lineage
+- Existing Keep deployments must upgrade or adopt features without breaking APIs, data, or day-2 operations
+
+The resulting product should be a credible open-source alternative to Incident.io, Rootly, FireHydrant, Harness AI SRE, IBM Cloud Pak for AIOps, and Dynatrace Davis AI — without rewriting Keep core.
+
+## 2. Problem statement
+
+Today Keep already provides:
+
+- Incident management and alert aggregation
+- Correlation, enrichment, deduplication
+- Workflow automation and deep integrations
+- Timeline and collaboration hooks (Slack/Jira/GitHub)
+- Early AI assists (incident chat, workflow assistant, semi-automatic correlation)
+
+Gaps versus next-gen AIOps platforms:
+
+1. Investigation is still mostly **human-driven**
+2. There is no durable **investigation / RCA / evidence** domain
+3. Tool use is fragmented (provider methods, workflows) rather than a unified **agent + MCP** layer
+4. There is no first-class **policy engine** for safe AI actions
+5. Learning from past incidents (RAG + feedback loops) is limited
+
+## 3. Goals
+
+| ID | Goal |
+|----|------|
+| G1 | Autonomously investigate incidents and produce useful RCA drafts |
+| G2 | Gather evidence via specialized agents and MCP tools |
+| G3 | Retrieve and apply institutional knowledge (runbooks, postmortems, IaC) |
+| G4 | Suggest remediations with risk, blast radius, and rollback |
+| G5 | Execute only policy-approved safe actions |
+| G6 | Generate postmortems and learn from outcomes |
+| G7 | Reuse existing Keep capabilities; implement only net-new AIOps functionality |
+| G8 | Remain compatible with current Keep APIs, data model, workflows, and providers |
+| G9 | Provide an incremental upgrade path from vanilla Keep to the new product |
+| G10 | Remain self-hosted, multi-tenant, multi-LLM, OpenTelemetry-native |
+
+## 4. Non-goals
+
+- Rewriting Keep's alert/incident/workflow core
+- Creating an incompatible fork or parallel product that cannot run existing Keep configs
+- Breaking existing REST APIs, auth flows, or workflow YAML without a migration path
+- Replacing Keep workflows with agents for all automation
+- Unrestricted autonomous remediation in production by default
+- Building a proprietary closed LLM stack
+- Achieving Davis-level continuous causal inference in MVP
+
+## 4.1 Compatibility requirements
+
+| ID | Requirement |
+|----|-------------|
+| CR1 | Existing Keep installs SHALL continue to operate with AI features disabled |
+| CR2 | Existing providers, workflows, presets, and incident data SHALL remain valid |
+| CR3 | Public Keep APIs used by customers SHALL remain backward compatible (additive changes preferred) |
+| CR4 | New product packaging MAY add services/UI, but MUST NOT require rewrite of tenant configuration |
+| CR5 | Migration from current Keep to the new product SHALL be incremental (feature flags / optional components) |
+
+## 5. Users and personas
+
+| Persona | Needs |
+|---------|-------|
+| **On-call SRE** | Faster context, evidence, and RCA during SEVs |
+| **Incident commander** | Coordinated investigation plan and clear next actions |
+| **Platform engineer** | Safe integrations, policies, deployability on Kubernetes |
+| **Security / compliance** | Audit trail, approval gates, least privilege |
+| **Keep contributor / vendor** | Clear upstream vs extension boundaries |
+
+## 6. Product capabilities
+
+### 6.1 Must-have (MVP)
+
+- Auto-start investigation on eligible incidents
+- Context pack from Keep (alerts, incident, topology, timeline)
+- RAG over runbooks and historical incidents
+- Read-only MCP tools (Kubernetes + observability)
+- Draft RCA written back to Keep timeline
+- Investigation UI panel with evidence and hypotheses
+- Human feedback (useful / not useful)
+- Suggest-only policy mode (no mutate)
+
+### 6.2 Should-have (post-MVP)
+
+- Multi-agent supervisor + specialists
+- Broader MCP mesh (GitOps, AWS read, collaboration)
+- Remediation suggestions with approval UX
+- Controlled execution of allowlisted actions
+- Automatic postmortem generation
+- Learning loop from accept/reject outcomes
+
+### 6.3 Later
+
+- Cost / security / network / database specialist agents
+- Air-gapped LLM packs
+- What-if blast-radius simulation
+- MCP marketplace / customer-authored agents
+
+## 7. Functional requirements
+
+| ID | Requirement |
+|----|-------------|
+| FR1 | System SHALL create an Investigation when an incident is created/updated per tenant policy |
+| FR2 | System SHALL be idempotent per `(tenant_id, incident_id, trigger_hash)` |
+| FR3 | Agents SHALL call external systems only through MCP Gateway |
+| FR4 | Mutating tools SHALL be denied unless Policy Engine allows and (if required) human approval exists |
+| FR5 | All tool calls, LLM calls, and approvals SHALL be audited |
+| FR6 | Investigation artifacts SHALL be tenant-isolated |
+| FR7 | Keep MUST remain usable if AI plane is down (no hard dependency on critical path) |
+| FR8 | Results SHALL be written back to Keep via stable APIs (enrichments, comments/timeline) |
+| FR9 | Platform SHALL support multiple LLM backends |
+| FR10 | Operators SHALL be able to set mode: `off \| suggest \| assisted \| auto` per tenant/env |
+
+## 8. Non-functional requirements
+
+| ID | Requirement | Target |
+|----|-------------|--------|
+| NFR1 | Time to first evidence (p50) | &lt; 3 minutes |
+| NFR2 | Draft RCA for common K8s/app failures (p50) | &lt; 15 minutes |
+| NFR3 | Concurrent investigations (MVP) | ≥ 50 |
+| NFR4 | Availability of Keep core | Unaffected by AI plane outages |
+| NFR5 | Security default | Fail-closed on mutate; deny-by-default tools |
+| NFR6 | Observability | OpenTelemetry traces with `investigation_id` |
+| NFR7 | Deploy | Kubernetes Helm chart sibling to Keep |
+
+## 9. Success metrics
+
+| Metric | Signal |
+|--------|--------|
+| RCA usefulness | ≥ 60% “useful” on golden set / early tenants |
+| MTTR / MTTA delta | Measurable improvement vs baseline after assisted mode |
+| Approval lag | Tracked; used to tune auto-allowlists |
+| Auto-remediation success | Only after gated GA; high precision required |
+| Cost per investigation | Budget caps enforced; no unbounded agent loops |
+| Upstream health | Keep upgrades remain routine (sidecar strategy) |
+
+## 10. Constraints and assumptions
+
+- Keep already has alert ingest, correlation, incidents, workflows, providers, RBAC, Pusher, ARQ/Redis, and OTel
+- Strongest extension seams today: providers (`PROVIDER_METHODS`), workflows, incident enrichments/comments, AI suggestion patterns, identity managers
+- Team is 3–6 engineers; prefer combined AI services early, split later
+- Production mutate remains opt-in and environment-aware
+
+## 11. Risks
+
+| Risk | Mitigation |
+|------|------------|
+| Hallucinated RCA / unsafe actions | Citations, evidence scoring, policy fail-closed |
+| Prompt injection via tools/docs | Untrusted tool I/O; dual checks before mutate |
+| Keep upgrade friction | Minimal upstream surface; ADR-0001 sidecar |
+| Cost explosions | Step/cost/time budgets per investigation |
+| Low user trust | Shadow → suggest → assisted → auto ladder |
+
+## 12. Milestones (summary)
+
+See [Roadmap milestones](/aiops/roadmap/milestones) and [MVP](/aiops/roadmap/mvp).
+
+| Phase | Outcome |
+|-------|---------|
+| M0 | Spike: event → read-only investigation → Keep comment |
+| M1 | Platform foundation (DB, auth, Helm, OTel, suggest-only) |
+| M2 | **MVP**: autonomous investigate + RCA draft + RAG |
+| M3 | Multi-agent + MCP expansion |
+| M4 | Policy + remediation planning + approvals |
+| M5 | Controlled execution |
+| M6 | Postmortems + learning |
+| M7 | Enterprise hardening |
+
+## 13. Open questions
+
+1. Event transport for v1: Redis Streams vs webhook-only?
+2. Investigation UI: embedded Keep panel vs separate app shell?
+3. Execution path preference: MCP mutate vs Keep workflow templates as runners?
+4. Which upstream Keep PRs are acceptable in the next two release cycles?
+
+## 14. Decision log
+
+| Date | Decision | Ref |
+|------|----------|-----|
+| 2026-07-27 | Sidecar AI control plane over Keep fork/rewrite | [ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane) |
+| 2026-07-27 | MCP as sole agent tool bus | [ADR-0002](/aiops/adr/0002-mcp-as-tool-bus) |
+| 2026-07-27 | Policy-gated execution; suggest-only MVP | [ADR-0003](/aiops/adr/0003-policy-gated-execution) |
+| 2026-07-27 | Domain event bridge from Keep | [ADR-0004](/aiops/adr/0004-domain-event-bridge) |
+| 2026-07-27 | Knowledge/RAG external to Keep DB | [ADR-0005](/aiops/adr/0005-external-knowledge-engine) |
+| 2026-07-27 | Modular monolith AI plane first | [ADR-0006](/aiops/adr/0006-modular-monolith-ai-plane) |
+| 2026-07-27 | Plan adopted; execution starts at M0 | [Execution kickoff](/aiops/roadmap/execution-kickoff) |

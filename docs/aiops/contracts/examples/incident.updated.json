@@ -1,0 +1,22 @@
+{
+  "specversion": "1.0",
+  "id": "4a7c9d3f-8b2e-5f6a-0d1b-3c5e7a9b1d2f",
+  "type": "incident.updated",
+  "source": "keep-api",
+  "time": "2026-07-29T12:05:00Z",
+  "tenantid": "11111111-2222-3333-4444-555555555555",
+  "subject": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+  "dataschema": "keep://events/incident.updated/1",
+  "data": {
+    "incident_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    "name": "Payment API elevated 5xx rate",
+    "severity": "critical",
+    "status": "acknowledged",
+    "alerts_count": 7,
+    "fingerprint": "fp-9f8e7d6c5b",
+    "assignee": "sre-oncall@example.com",
+    "services": ["payment-api", "payment-db"],
+    "sources": ["prometheus", "datadog"],
+    "is_predicted": false
+  }
+}

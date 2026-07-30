@@ -1,0 +1,55 @@
+---
+title: "Deployment Architecture"
+description: "Kubernetes-first deployment strategy for Keep plus the AIOps control plane."
+---
+
+## Runtime topology
+
+```text
+Ingress
+  ├─ keep-ui
+  ├─ keep-api
+  ├─ soketi
+  └─ aiops-api (orchestrator / gateway entry)
+
+Internal:
+  postgres(keep) · postgres(aiops) · redis
+  vector · minio/S3 · mcp-gateway · mcp-servers · workers
+  otel-collector
+```
+
+## Kubernetes strategy
+
+- Namespaces: `keep`, `keep-aiops`
+- Helm chart `keep-aiops` consumes Keep URL + JWKS/auth settings
+- HPA on orchestrator/gateway; KEDA on investigation queue depth when available
+- PodDisruptionBudgets for gateway + orchestrator
+- NetworkPolicies:
+  - orchestrator → keep-api
+  - agents → mcp-gateway only
+  - mcp-servers → least-privilege cloud identities (IRSA / Workload Identity)
+- Secrets via External Secrets / existing Keep secret manager patterns
+- Progressive delivery of capability modes: `suggest` → `assisted` → `auto(dev)` → `auto(staging)`
+
+## Local / compose
+
+For development, extend Docker Compose with:
+
+- `aiops-api`
+- `mcp-gateway` + stub MCP servers
+- dedicated Postgres schema/db for AIOps
+- optional Redis Stream consumer
+
+Do not require AI containers for vanilla Keep `docker-compose up`.
+
+## Migration / rollout
+
+1. Deploy AI plane beside Keep (no cutover)
+2. Feature flag per tenant: `aiops.mode = off|suggest|assisted|auto`
+3. Shadow mode first (investigate, limited writeback)
+4. Enable timeline RCA comments
+5. Enable approval-gated remediations in non-prod
+6. Backfill knowledge from historical incidents/postmortems
+7. Never make AI a hard dependency on Keep critical path
+
+See [milestones](/aiops/roadmap/milestones).

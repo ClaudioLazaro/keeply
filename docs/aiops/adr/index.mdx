@@ -1,0 +1,34 @@
+---
+title: "Architecture Decision Records"
+description: "Index of ADRs for the Keep AI-Native AIOps platform extension."
+---
+
+ADRs record **why** a significant technical decision was made. They are immutable once accepted; superseding decisions get a new ADR.
+
+## Format
+
+Use the [ADR template](/aiops/adr/0000-template). Status values: `Proposed`, `Accepted`, `Deprecated`, `Superseded`.
+
+## Index
+
+| ADR | Title | Status |
+|-----|-------|--------|
+| [0000](/aiops/adr/0000-template) | Template | — |
+| [0001](/aiops/adr/0001-sidecar-ai-control-plane) | Sidecar AI control plane (no Keep rewrite) | Accepted |
+| [0002](/aiops/adr/0002-mcp-as-tool-bus) | MCP as the agent tool integration layer | Accepted |
+| [0003](/aiops/adr/0003-policy-gated-execution) | Policy-gated execution; AI never mutates directly | Accepted |
+| [0004](/aiops/adr/0004-domain-event-bridge) | Domain event bridge from Keep | Accepted |
+| [0005](/aiops/adr/0005-external-knowledge-engine) | External knowledge/RAG engine | Accepted |
+| [0006](/aiops/adr/0006-modular-monolith-ai-plane) | Modular monolith AI plane first | Accepted |
+| [0007](/aiops/adr/0007-agent-framework-stack) | Agent framework stack (LangGraph + LiteLLM + MCP) | Accepted |
+
+## When to write an ADR
+
+Write an ADR when choosing:
+
+- Service boundaries or deployment topology
+- Security/policy defaults
+- Event/data contracts that multiple teams depend on
+- Something expensive to reverse
+
+Do **not** write ADRs for routine implementation choices (library minor versions, file layout tweaks).

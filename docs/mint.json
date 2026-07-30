@@ -78,6 +78,62 @@
       ]
     },
     {
+      "group": "AIOps Platform",
+      "pages": [
+        "aiops/overview",
+        "aiops/STATUS",
+        {
+          "group": "RFC",
+          "pages": ["aiops/rfc/0001-keep-evolved-capabilities"]
+        },
+        {
+          "group": "PRD",
+          "pages": ["aiops/prd/001-ai-native-aiops-platform"]
+        },
+        {
+          "group": "ADR",
+          "pages": [
+            "aiops/adr/index",
+            "aiops/adr/0000-template",
+            "aiops/adr/0001-sidecar-ai-control-plane",
+            "aiops/adr/0002-mcp-as-tool-bus",
+            "aiops/adr/0003-policy-gated-execution",
+            "aiops/adr/0004-domain-event-bridge",
+            "aiops/adr/0005-external-knowledge-engine",
+            "aiops/adr/0006-modular-monolith-ai-plane",
+            "aiops/adr/0007-agent-framework-stack"
+          ]
+        },
+        {
+          "group": "Architecture",
+          "pages": [
+            "aiops/architecture/overview",
+            "aiops/architecture/service-decomposition",
+            "aiops/architecture/domain-model",
+            "aiops/architecture/data-and-event-flow",
+            "aiops/architecture/api-design",
+            "aiops/architecture/agents-and-mcp",
+            "aiops/architecture/security-tenancy-scale",
+            "aiops/architecture/deployment",
+            "aiops/architecture/observability-testing"
+          ]
+        },
+        {
+          "group": "Roadmap",
+          "pages": [
+            "aiops/roadmap/execution-kickoff",
+            "aiops/roadmap/mvp",
+            "aiops/roadmap/milestones",
+            "aiops/roadmap/upstream-vs-extension"
+          ]
+        },
+        {
+          "group": "Contracts",
+          "pages": ["aiops/contracts/event-envelope"]
+        }
+      ]
+    },
+    {
       "group": "Alerts",
       "pages": [
         "alerts/overview",

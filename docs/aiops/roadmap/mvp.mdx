@@ -1,0 +1,48 @@
+---
+title: "MVP Definition"
+description: "Scope of the first production-useful AIOps release: autonomous investigation and RCA drafts without mutate."
+---
+
+## Product statement
+
+Ship an **assisted AI SRE investigator** that starts on incidents, gathers read-only evidence, retrieves runbooks, and posts a useful RCA draft into Keep — with full audit and suggest-only policy.
+
+## In scope
+
+- Auto-start investigation on eligible incidents (e.g. P1+)
+- Context pack from Keep (incident, alerts, topology, timeline)
+- RAG over runbooks + historical incidents
+- Observability + Kubernetes **read** MCP tools
+- Draft RCA in Keep timeline / investigation panel
+- Evidence + hypotheses UI
+- Human feedback (useful / not)
+- Tenant isolation, OTel, Helm deploy
+- Mode: `suggest_only` only
+
+## Out of scope
+
+- Autonomous remediation / mutate tools
+- Broad AWS mutate
+- Unsupervised multi-agent swarms
+- Continuous causal discovery (Davis-like)
+- Hard dependency from Keep ingest to AI plane
+
+## Acceptance criteria
+
+| ID | Criterion |
+|----|-----------|
+| AC1 | Creating a qualifying incident creates an Investigation idempotently |
+| AC2 | p50 time-to-first-evidence &lt; 3 minutes in staging |
+| AC3 | RCA draft appears in Keep UI/timeline with citations |
+| AC4 | ≥ 60% useful rating on golden set |
+| AC5 | Keep alert ingest works with AI plane stopped |
+| AC6 | No mutate tool callable under default policy |
+| AC7 | All LLM/tool calls traced with `investigation_id` |
+
+## Primary milestone
+
+Delivered by [Milestone M2](/aiops/roadmap/milestones#milestone-2--mvp-autonomous-investigation).
+
+## Explicit non-goals for MVP marketing
+
+Do not claim “auto-remediation” or “full AIOps replacement” until M4–M5 gates are green.

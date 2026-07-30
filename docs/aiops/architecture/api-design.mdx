@@ -1,0 +1,94 @@
+---
+title: "API Design"
+description: "Keep-facing adapters and AIOps control plane API surface."
+---
+
+## Auth
+
+- Accept Keep-issued JWT and/or API keys
+- Propagate `tenant_id`, user identity, and role on every call
+- Short-lived investigation tokens for tool sessions when needed
+
+## Keep-facing (thin)
+
+Prefer external AIOps API + Keep storing pointers. Optional Keep routes for UX convenience:
+
+```
+POST /api/v1/aiops/hooks/incident-events
+GET  /api/v1/incidents/{id}/investigation
+POST /api/v1/incidents/{id}/investigate
+POST /api/v1/incidents/{id}/approvals/{approval_id}
+```
+
+Reuse existing Keep APIs for:
+
+- Incident/alert reads
+- Enrichment writes
+- Comments / timeline
+- Workflow triggers (optional)
+
+## AIOps control plane
+
+### Investigations
+
+```
+POST /v1/investigations
+GET  /v1/investigations/{id}
+GET  /v1/investigations?incident_id=
+POST /v1/investigations/{id}:cancel
+POST /v1/investigations/{id}:replan
+```
+
+### Artifacts
+
+```
+GET  /v1/investigations/{id}/evidence
+GET  /v1/investigations/{id}/hypotheses
+GET  /v1/investigations/{id}/rca
+GET  /v1/investigations/{id}/remediations
+POST /v1/investigations/{id}/remediations/{rid}:approve
+POST /v1/investigations/{id}/remediations/{rid}:execute
+GET  /v1/investigations/{id}/postmortem
+```
+
+### Knowledge
+
+```
+POST /v1/knowledge/sources
+POST /v1/knowledge/sources/{id}:sync
+POST /v1/knowledge/query
+```
+
+### Agents / MCP
+
+```
+GET  /v1/agents
+GET  /v1/mcp/tools
+POST /v1/mcp/tools/{tool}:invoke
+```
+
+`tools:invoke` is always policy-gated and audited.
+
+### Policy
+
+```
+GET  /v1/policies
+PUT  /v1/policies/{id}
+POST /v1/policies:evaluate
+```
+
+## Versioning
+
+- AIOps API versioned under `/v1`
+- Domain events carry `type` + schema version in `data` or `dataschema`
+- MCP tool schemas versioned per server release; gateway advertises catalog
+
+## Error model
+
+| Code | Meaning |
+|------|---------|
+| `409` | Idempotent conflict / investigation already active |
+| `403` | Policy deny |
+| `422` | Tool args invalid |
+| `429` | Budget / rate limit |
+| `503` | Dependency degraded (LLM/MCP); include retry hints |

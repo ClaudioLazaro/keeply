@@ -1,0 +1,63 @@
+---
+title: "ADR-0001: Sidecar AI Control Plane"
+description: "Evolve Keep into a new compatible product by adding an AI control plane beside the existing Keep foundation — not by rewriting or forking it."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / Platform |
+
+## Context
+
+The goal is to **evolve Keep into a new AI-native AIOps product** while remaining compatible with current Keep deployments, APIs, workflows, providers, and data.
+
+Rewriting or deeply embedding an agent runtime inside `keep-api` would:
+
+- Break the compatibility promise with current Keep
+- Couple LLM/agent lifecycle to alert OLTP
+- Expand Keep's security blast radius for mutate actions
+- Make upgrades and migration painful for existing users
+
+Keep already exposes strong seams: providers, workflows, incident BL, enrichments/comments, ARQ workers, identity managers, and early AI suggestion APIs.
+
+## Decision
+
+Evolve the product by adopting a **first-class AI control plane** (`keep-aiops`) that ships as part of the new product architecture, while Keep core remains the compatible foundation:
+
+1. Reuse Keep as system of record for alerts, incidents, auth, workflows, and integrations
+2. Add orchestration, agents, RAG, policy, and execution as product capabilities beside that foundation
+3. Write results back through stable Keep APIs (enrichments, timeline/comments, optional workflow triggers)
+4. Guarantee vanilla Keep behavior when AI components are absent or disabled
+
+Architecture style is sidecar/control-plane for isolation and compatibility — **product-wise this is Keep evolved**, not a separate incompatible offering.
+
+Keep core changes stay thin and compatibility-preserving (see [upstream vs extension](/aiops/roadmap/upstream-vs-extension)).
+
+## Alternatives considered
+
+1. **Fork / rewrite Keep into a new incompatible product** — maximum control, destroys upgrade path. Rejected.
+2. **Embed agents inside keep-api** — faster demo, poor isolation/scaling, higher break risk. Rejected for production path.
+3. **Workflows-only AI** — reuses existing engine, insufficient for multi-step investigation memory and policy. Insufficient alone; workflows remain a complementary runner.
+
+## Consequences
+
+### Positive
+
+- Existing Keep users can adopt the new product incrementally
+- AI plane can fail without breaking alert ingest
+- Independent scaling/release for AI capabilities without breaking Keep compatibility
+- Clear story: new product = Keep foundation + AI-native control plane
+
+### Negative / trade-offs
+
+- Requires reliable event bridge and API compatibility discipline
+- Dual deployment units inside one product (Keep + AIOps chart)
+- Some UX glue needed in Keep UI for investigation panel
+- Product packaging/versioning must communicate “compatible evolution,” not “breaking next Keep”
+
+## References
+
+- [PRD-001](/aiops/prd/001-ai-native-aiops-platform)
+- [Architecture overview](/aiops/architecture/overview)

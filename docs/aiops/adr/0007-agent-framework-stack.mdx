@@ -1,0 +1,98 @@
+---
+title: "ADR-0007: Agent Framework Stack"
+description: "Use LangGraph for investigation orchestration, LiteLLM for multi-model access, and MCP Gateway for all tools — avoid classic LangChain chains and provider-locked agent SDKs."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / AI Platform |
+
+## Context
+
+We need a strategy to build specialized agents (Coordinator, K8s, Observability, etc.) for the AI control plane.
+
+Constraints from prior ADRs:
+
+- Multi-LLM / vendor-neutral ([PRD-001](/aiops/prd/001-ai-native-aiops-platform))
+- Tools only via MCP Gateway + Policy ([ADR-0002](/aiops/adr/0002-mcp-as-tool-bus), [ADR-0003](/aiops/adr/0003-policy-gated-execution))
+- Explicit investigation lifecycle with human gates
+- Keep already uses `openai`, `anthropic`, LiteLLM provider, and CopilotKit in UI (chat UX — not the control plane)
+
+Classic LangChain (chains/LCEL agents with community tools) tends to:
+
+- Hide control flow
+- Encourage direct tool SDKs (bypassing our policy gateway)
+- Add dependency churn without matching our FSM needs
+
+## Decision
+
+### Chosen stack
+
+| Layer | Choice | Role |
+|-------|--------|------|
+| **Orchestration** | **LangGraph** | Investigation graph: state, branching, loops, checkpoints, human-in-the-loop |
+| **Model routing** | **LiteLLM** (OpenAI-compatible) | Multi-provider models; aligns with Keep's LiteLLM provider direction |
+| **Tools** | **MCP Gateway client only** | No direct cloud SDKs inside agents; policy/audit at gateway |
+| **Structured I/O** | **Pydantic models** | Plans, hypotheses, RCA sections, remediation proposals |
+| **UI assistants (Keep)** | **CopilotKit (existing)** | Keep UI chat/workflow assist — separate from AIOps control plane |
+
+### Agent creation strategy
+
+1. **Coordinator is a graph, not a free swarm**
+   - LangGraph nodes map to investigation phases: `plan → gather → hypothesize → rca → remediate_suggest → await_approval`
+2. **Specialists are constrained node agents**
+   - Each specialist: system prompt + allowlisted MCP tools + max steps/cost + structured output schema
+3. **Tools are never LangChain community tools talking to AWS/K8s directly**
+   - Graph tool calls become MCP Gateway invocations (`execution_class` enforced server-side)
+4. **Deterministic scaffolds first**
+   - Prefer playbook/graph edges for known failure classes; LLM fills gaps
+5. **M0 may use a thin custom FSM** calling the same MCP + LiteLLM interfaces
+   - Introduce LangGraph persistence/HITL by M1–M2 when durability matters — interfaces stay the same
+
+### Explicitly not chosen as primary runtime
+
+| Option | Why not primary |
+|--------|-----------------|
+| **LangChain Agents / LCEL classic** | Too much magic; weak fit for policy-first tool bus |
+| **OpenAI Agents SDK alone** | Fast, but fights multi-LLM / vendor-neutral goal |
+| **CrewAI / AutoGen as core** | Less explicit control for production IR state machines |
+| **CopilotKit as control-plane runtime** | Keep it for UI copilots only |
+
+LangChain **packages may appear as transitive deps** of LangGraph; we do **not** standardize on LangChain chains/tools as the app architecture.
+
+## Alternatives considered
+
+1. **PydanticAI-only** — excellent typed DX and native MCP; weaker out-of-the-box durable multi-actor IR graph vs LangGraph. May be used later for specialist micro-agents inside nodes.
+2. **Custom FSM forever** — best for M0 spike; reinventing checkpoint/HITL by M2 is wasteful.
+3. **OpenAI Agents SDK** — good handoffs; rejected as sole stack due to multi-LLM requirement.
+
+## Consequences
+
+### Positive
+
+- Explicit, auditable investigation control flow
+- Multi-model via LiteLLM
+- Hard security boundary preserved (MCP Gateway)
+- Clear separation: UI CopilotKit vs backend LangGraph runtime
+
+### Negative / trade-offs
+
+- LangGraph learning curve
+- Must write/maintain MCP Gateway tool adapter (do not bypass with LC tools)
+- Need discipline to avoid pulling half of LangChain ecosystem
+
+## Implementation rules
+
+1. Agents depend on `McpGatewayClient`, not boto3/kubernetes clients
+2. Every graph run carries `tenant_id`, `incident_id`, `investigation_id`
+3. Checkpointer/state store lives in AIOps DB/Redis — not Keep OLTP
+4. Eval harness tests graphs with fake MCP servers
+5. Default model configurable per tenant via LiteLLM
+
+## References
+
+- [Agents and MCP](/aiops/architecture/agents-and-mcp)
+- [ADR-0006 Modular monolith](/aiops/adr/0006-modular-monolith-ai-plane)
+- [STATUS](/aiops/STATUS)

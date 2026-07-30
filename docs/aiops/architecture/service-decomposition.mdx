@@ -1,0 +1,60 @@
+---
+title: "Service Decomposition"
+description: "AIOps services, ownership boundaries, and what stays inside Keep."
+---
+
+## Services
+
+| Service | Responsibility | State | Notes |
+|---------|----------------|-------|-------|
+| **keep-api / keep-ui** | Lifecycle, auth, UI, workflows, integrations | Existing Keep DB | Minimize changes |
+| **event-bridge** | Consume Keep outbox/webhooks/streams | Offsets | Thin |
+| **ai-orchestrator** | Investigation FSM, planning, human gates | Investigations | Can absorb other services early |
+| **agent-manager** | Agent registry, budgets, runtime isolation | Config + runs | |
+| **context-builder** | Incident context pack assembly | Cache | Stateless OK |
+| **rca-engine** | Hypotheses, scoring, RCA report | Artifacts | |
+| **knowledge-engine** | Ingest, embed, retrieve | Vector + metadata | [ADR-0005](/aiops/adr/0005-external-knowledge-engine) |
+| **decision-engine** | Rank remediations, risk, blast radius | Stateless | |
+| **policy-engine** | Allow/deny/approve by action/env/role | Policy store | Fail-closed mutate |
+| **execution-engine** | Approved runners, retries, compensation | Execution log | |
+| **mcp-gateway** | AuthZ, catalog, rate limit, audit | Sessions | [ADR-0002](/aiops/adr/0002-mcp-as-tool-bus) |
+| **mcp-servers/\*** | k8s, aws, obs, gitops, collab, knowledge | None/local cache | |
+
+## Composition strategy
+
+For a 3–6 person team:
+
+1. **M0–M2:** ship a modular monolith `aiops-api` (orchestrator + context + RCA + policy stub + gateway client)
+2. **M3+:** split Knowledge, MCP Gateway, and Execution when SLOs/queues demand it
+3. Avoid more than ~9 deployables until scale requires them
+
+## Required changes inside Keep
+
+Minimal, upstream-friendly:
+
+1. Domain event outbox + webhook/subscription config — [ADR-0004](/aiops/adr/0004-domain-event-bridge)
+2. Stable enrichment + comment/timeline write paths
+3. Optional investigation deep-link / panel shell in `keep-ui`
+4. Optional workflow triggers on `investigation.*`
+
+## Remains external
+
+- Agent runtime and prompts
+- Vector index and document crawlers
+- MCP servers and gateway
+- Policy DSL evaluation
+- Object storage for evidence blobs
+- Optional Temporal/Cadence for long-running investigations
+- LLM observability (Langfuse/Phoenix)
+
+## Repository layout (suggested)
+
+```text
+keep/                     # upstream OSS — thin PRs only
+keep-aiops/               # extension monorepo
+  services/
+  mcp-servers/
+  packages/               # openapi, policy-sdk, keep-client
+  deploy/helm/keep-aiops/
+  docs/
+```

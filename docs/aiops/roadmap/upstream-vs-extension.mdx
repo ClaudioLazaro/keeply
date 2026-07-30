@@ -1,0 +1,69 @@
+---
+title: "Upstream vs Extension vs Microservices"
+description: "Classification of AIOps capabilities: contribute to Keep, ship as plugins, or run as standalone services."
+---
+
+Use this document when prioritizing PRs and repository boundaries.
+
+Principles:
+
+- **Evolve Keep into a new product** without breaking current Keep
+- **Maximize compatibility and upgradeability** ([ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane))
+- Reuse existing Keep capabilities; implement only net-new functionality
+
+## Contribute upstream to Keep
+
+| Capability | Why upstream |
+|------------|--------------|
+| Domain event outbox + webhooks | Benefits all integrations; small surface |
+| Stable enrichment + comment/timeline APIs | Contract needed by many consumers |
+| Incident investigation deep-link / panel shell | UX consistency; calls external API |
+| AI incident clustering improvements | Extends existing `AISuggestion` flows |
+| Optional workflow triggers on `investigation.*` | Fits workflow model |
+| LLM provider adapters | Already the provider plugin model |
+
+Upstream PRs should be **thin, documented, and optionally disabled** via config.
+
+## Extension / plugin (keep-aiops or provider packs)
+
+| Capability | Why extension |
+|------------|---------------|
+| MCP tool wrappers over Keep providers | Avoid bloating Keep core |
+| Agent prompt packs / specialist packs | Fast iteration |
+| Investigation UI feature modules | Can feature-flag in keep-ui or embed |
+| Copilot route enhancements | May start in Next.js; move server-side later |
+| Tenant policy packs (as content) | Not core Keep RBAC |
+| Golden incident eval datasets | Product-specific |
+
+## Standalone microservices
+
+| Capability | Why standalone |
+|------------|----------------|
+| AI Orchestrator / Agent Manager | Different lifecycle and risk |
+| Context Builder / RCA Engine | CPU/LLM heavy |
+| Knowledge Engine + vector index | Separate storage/scaling ([ADR-0005](/aiops/adr/0005-external-knowledge-engine)) |
+| Decision / Policy / Execution engines | Security boundary ([ADR-0003](/aiops/adr/0003-policy-gated-execution)) |
+| MCP Gateway + MCP servers | Tool mesh isolation ([ADR-0002](/aiops/adr/0002-mcp-as-tool-bus)) |
+| Event bridge consumer | Can evolve transport independently |
+| Object storage evidence store | Blob lifecycle ≠ OLTP |
+
+## Decision checklist
+
+Before adding code to Keep core, ask:
+
+1. Does this benefit non-AI Keep users?
+2. Is the change &lt; ~small PR and backwards compatible?
+3. Can Keep run correctly if the feature is disabled?
+4. Would putting it in `keep-aiops` avoid coupling LLM/agent deps into `keep-api`?
+
+If (1–3) are yes → consider upstream.  
+If (4) is the main driver → keep it external.
+
+## Team ownership sketch
+
+| Role | Focus |
+|------|-------|
+| Staff / Architect | Contracts, upstream PRs, security/policy |
+| Platform / SRE | Helm, events, MCP gateway, observability |
+| AI engineers | Orchestrator, agents, evals, RAG |
+| Fullstack | Investigation UI, approvals, Keep integration |

@@ -1,0 +1,75 @@
+---
+title: "Agents and MCP"
+description: "Multi-agent topology, MCP gateway responsibilities, and example tool catalogs."
+---
+
+## Agent topology
+
+```text
+Incident Coordinator (supervisor)
+  ├─ Observability Agent
+  ├─ Kubernetes Agent
+  ├─ AWS Agent
+  ├─ GitOps Agent
+  ├─ Database Agent
+  ├─ Network Agent
+  ├─ Security Agent
+  └─ Cost Optimization Agent
+```
+
+Patterns:
+
+- Supervisor + specialists (not an unconstrained swarm)
+- Shared token-budgeted **context pack**
+- Tool use **only** via MCP Gateway ([ADR-0002](/aiops/adr/0002-mcp-as-tool-bus))
+- Per-agent: system prompt, allowlisted tools, max steps, cost ceiling, timeout
+- Deterministic scaffolds first; LLM fills gaps
+- Reuse Keep LLM providers as **model backends**, not as agents
+
+## MCP architecture
+
+```text
+Agent Runtime → MCP Gateway → MCP Server → External system
+                    │
+                    ├─ AuthN/Z (tenant, role, env)
+                    ├─ Policy check (read vs mutate)
+                    ├─ Rate limit / circuit breaker
+                    ├─ Schema validation + secret redaction
+                    └─ Audit log
+```
+
+## Example tools
+
+### Kubernetes
+
+`get_pods`, `get_logs`, `describe_pod`, `rollout_history`, `get_events`, `get_hpa`, `get_nodes`
+
+### AWS
+
+CloudWatch, EC2, EKS, RDS, IAM (read), Lambda (read)
+
+### GitOps
+
+GitHub, GitLab, Argo CD, Terraform state/plan metadata
+
+### Observability
+
+Datadog, Prometheus, Grafana, Loki, Tempo
+
+### Collaboration
+
+Slack, Jira, Teams
+
+### Knowledge
+
+Confluence, Notion, Git repositories (via Knowledge Engine)
+
+## Mutate tools
+
+- Marked `execution_class=mutate`
+- Require policy allow + approval token when class is `approval_required`
+- Prefer Keep workflow templates as an alternative runner for well-known remediations
+
+## Mapping from Keep providers
+
+Existing `PROVIDER_METHODS` are a natural source of MCP tool schemas. Wrappers live in `mcp-servers/`, not inside agent prompts.

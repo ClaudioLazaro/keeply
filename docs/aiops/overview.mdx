@@ -1,0 +1,83 @@
+---
+title: "Plataforma AIOps AI-Native"
+description: "Documentação de engenharia para evoluir o Keep em um produto AIOps de nova geração, mantendo compatibilidade com deployments, APIs e dados atuais do Keep."
+---
+
+Esta seção reúne o **plano de produto, arquitetura e entrega** para evoluir o Keep em um produto AIOps AI-native de nova geração.
+
+**Posição de produto:** trata-se de uma **evolução do Keep para um novo produto**, não de um rewrite nem de um fork incompatível. Usuários, APIs, workflows, providers e dados existentes do Keep devem continuar funcionando. As novas capacidades de IA são aditivas e podem ser adotadas progressivamente.
+
+A estrutura usa tipos de documento de engenharia padrão para que decisões permaneçam revisáveis e a implementação, incremental.
+
+## Tipos de documento
+
+| Tipo | Propósito | Local |
+|------|-----------|-------|
+| **STATUS** | Estado vivo de entrega e handoff | [STATUS](/aiops/STATUS) |
+| **RFC** | Propostas abertas para comentários | [RFC-0001](/aiops/rfc/0001-keep-evolved-capabilities) |
+| **PRD** | Problema, metas, não-objetivos, requisitos, métricas | [PRD-001](/aiops/prd/001-ai-native-aiops-platform) |
+| **ADR** | Architecture Decision Records (contexto → decisão → consequências) | [Índice de ADRs](/aiops/adr/index) |
+| **Arquitetura** | Design vivo do sistema (componentes, APIs, fluxos, deploy) | [Visão geral de arquitetura](/aiops/architecture/overview) |
+| **Roadmap** | Milestones, MVP, split upstream vs extensão | [Milestones](/aiops/roadmap/milestones) |
+| **Contratos** | Contratos de integração (eventos, envelopes) | [Event envelope](/aiops/contracts/event-envelope) |
+
+## Princípios centrais
+
+- **Evoluir o Keep para um novo produto** — capacidades aditivas, novo empacotamento/experiência, mesma linhagem
+- **Compatível com o Keep atual** — APIs, dados, workflows, providers e caminhos de deploy continuam funcionando
+- **Reusar o que existe; implementar apenas o que falta** — sem rewrite do núcleo de alertas/incidentes/workflows
+- **AI-first, agents em vez de workflows estáticos** para investigação e RCA
+- **MCP como camada de integração de ferramentas**
+- **Event-driven**, Kubernetes-first, OpenTelemetry-first
+- **Self-hosted**, vendor-neutral, multi-LLM
+- **Execução com policy-gating** — a IA nunca executa ações destrutivas diretamente
+
+## Contrato de compatibilidade (inegociável)
+
+| Garantia | Significado |
+|----------|-------------|
+| **Compatibilidade de API** | Integrações REST/auth existentes do Keep continuam funcionando |
+| **Compatibilidade de dados** | Tenants, alertas, incidentes e workflows existentes permanecem válidos |
+| **Compatibilidade comportamental** | Modo Keep vanilla funciona com o AI plane desligado/ausente |
+| **Caminho de upgrade** | Instalações atuais do Keep adotam o novo produto incrementalmente |
+| **Modelo de extensão** | O novo AI plane faz parte da arquitetura do produto, não é uma substituição quebradora |
+
+## Núcleo Keep vs capacidades do novo produto
+
+**Fundação Keep (reuso / permanece sistema de registro):**
+
+- Ciclo de vida de incidentes, alertas, timeline
+- Autenticação, RBAC, integrações existentes
+- Workflows e ecossistema de providers
+
+**Capacidades do novo produto (a construir):**
+
+- Orquestração de IA, gestão de agents, construção de contexto
+- Motores de RCA, knowledge (RAG), decisão, policy e execução
+- UX de investigação e APIs do plano de controle AIOps
+
+## Ordem de leitura sugerida
+
+1. [STATUS — Entrega & handoff](/aiops/STATUS) ← comece aqui para o estado atual / handoff para LLM
+2. [Execution kickoff](/aiops/roadmap/execution-kickoff)
+3. [PRD-001 — Plataforma AIOps AI-Native](/aiops/prd/001-ai-native-aiops-platform)
+4. [ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane) + [ADR-0006](/aiops/adr/0006-modular-monolith-ai-plane)
+5. [Visão geral de arquitetura](/aiops/architecture/overview)
+6. [Definição do MVP](/aiops/roadmap/mvp)
+7. [Milestones](/aiops/roadmap/milestones)
+
+## Status
+
+| Artefato | Status |
+|----------|--------|
+| Direção de produto | **Adotada** — Keep Evolved = Fundação + Plano de Controle de IA + MCP |
+| PRD-001 | Adotado (baseline) |
+| ADR-0001 … ADR-0007 | Aceitos |
+| Docs de arquitetura | Baseline ativa |
+| Roadmap (12–18 meses) | Ativo — M0 concluído, próximo: M1 |
+| RFC-0001 (inventário de capacidades) | [Em revisão](/aiops/rfc/0001-keep-evolved-capabilities) |
+| Status vivo / handoff para LLM | [STATUS](/aiops/STATUS) |
+
+<Note>
+Estes docs descrevem uma **evolução de produto compatível** do Keep: novas capacidades AI-native sobre a fundação atual. Recursos de IA já disponíveis no Keep voltados ao usuário estão documentados em [AIOps → AI](/overview/ai-incident-assistant).
+</Note>

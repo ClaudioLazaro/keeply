@@ -1,0 +1,79 @@
+---
+title: "Contrato de Event Envelope"
+description: "Contrato alinhado a CloudEvents para os eventos de domínio do Keep consumidos pelo plano de controle AIOps (spike M0)."
+---
+
+<Info>
+Implementa o entregável #1 do M0 e o [ADR-0004](/aiops/adr/0004-domain-event-bridge). O lado produtor vive no Keep (spike de outbox/webhook); o lado consumidor é o módulo `event-bridge` no `aiops-api`.
+</Info>
+
+## Envelope
+
+Os eventos são **CloudEvents 1.0** em modo JSON estruturado. Atributos:
+
+| Atributo | Tipo | Obrigatório | Descrição |
+|----------|------|-------------|-----------|
+| `specversion` | string | sim | Sempre `"1.0"` |
+| `id` | string (uuid) | sim | Id único do evento; **chave de idempotência** para consumidores |
+| `type` | string | sim | Tipo do evento, ex.: `incident.created` |
+| `source` | string | sim | Identificador do produtor, ex.: `keep-api` |
+| `time` | string RFC3339 | sim | Instante de emissão em UTC |
+| `tenantid` | string | sim | Tenant id do Keep (atributo de extensão) |
+| `subject` | string | sim | Id da entidade de domínio, ex.: uuid do incidente |
+| `dataschema` | string | não | URI do schema com versão, ex.: `keep://events/incident.created/1` |
+| `data` | objeto | sim | Payload específico do tipo |
+
+## Tipos de evento (M0)
+
+| Tipo | Emitido quando | Payload `data` |
+|------|----------------|----------------|
+| `incident.created` | Incidente persistido no Keep | `IncidentEventData` |
+| `incident.updated` | Campos/alertas do incidente alterados | `IncidentEventData` |
+| `incident.resolved` | Incidente transiciona para resolvido | `IncidentEventData` |
+
+### `IncidentEventData` (schema v1)
+
+| Campo | Tipo | Obrigatório | Descrição |
+|-------|------|-------------|-----------|
+| `incident_id` | string (uuid) | sim | Id do incidente (igual ao `subject`) |
+| `name` | string \| null | não | Nome/resumo do incidente; pode ser `null` até o incidente ser nomeado (incidentes manuais) |
+| `severity` | enum | sim | `critical` \| `high` \| `warning` \| `info` \| `low` |
+| `status` | enum | sim | `firing` \| `acknowledged` \| `resolved` \| `merged` \| `deleted` |
+| `alerts_count` | inteiro | sim | Alertas associados no momento da emissão |
+| `fingerprint` | string | não | Fingerprint de correlação, quando conhecido |
+| `assignee` | string | não | Responsável atual |
+| `services` | string[] | não | Serviços afetados |
+| `sources` | string[] | não | Tipos de provider de origem |
+| `is_predicted` | booleano | não | Flag de incidente predito por IA |
+
+A versão do schema é carregada em `dataschema` (`…/incident.created/1`). Consumidores DEVEM ignorar campos desconhecidos; produtores NÃO PODEM remover nem retipar campos dentro de uma versão.
+
+## Transporte (spike M0): webhooks assinados
+
+O dispatcher de outbox do Keep faz POST do envelope para cada URL de consumidor inscrita.
+
+| Aspecto | Escolha |
+|---------|---------|
+| Método / content-type | `POST`, `application/cloudevents+json` |
+| Assinatura | `X-Keep-Signature: sha256=<hmac_hex>` sobre o body cru, chave = segredo de webhook compartilhado |
+| URL do consumidor (aiops-api) | `POST /v1/events/keep` |
+| Sucesso | `2xx`; o consumidor retorna `202` após aceitar de forma durável |
+| Retry | Backoff exponencial, ≥ 5 tentativas, depois a linha do outbox é marcada `failed` (reprocessável) |
+| Ordenação | Best-effort por incidente; consumidores devem tolerar reordenação/duplicatas usando `id` + `time` |
+
+Redis Streams permanece um transporte alternativo permitido atrás da mesma interface de bridge ([ADR-0004](/aiops/adr/0004-domain-event-bridge)); o envelope é agnóstico de transporte.
+
+## Regras do consumidor
+
+1. **Idempotência:** dedupe pelo `id` do evento; a criação de investigação deduplica por `(tenantid, subject)` enquanto houver investigação aberta
+2. **Elegibilidade:** no M0, investigações iniciam automaticamente em `incident.created` com severidade `critical|high`; demais eventos podem atualizar/replanejar
+3. **Sem dependência rígida:** se o consumidor estiver fora, a ingestão do Keep não pode ser afetada; eventos acumulam no outbox e são reprocessados
+4. **Tracing:** consumidores propagam o contexto de trace e marcam spans com `investigation_id`
+
+## Exemplos
+
+- [incident.created](/aiops/contracts/examples/incident.created.json)
+- [incident.updated](/aiops/contracts/examples/incident.updated.json)
+- [incident.resolved](/aiops/contracts/examples/incident.resolved.json)
+
+Modelos Pydantic de referência: `keep-aiops/aiops_api/modules/event_bridge/schemas.py`.

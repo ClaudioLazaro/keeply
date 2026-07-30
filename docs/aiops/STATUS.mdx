@@ -1,0 +1,151 @@
+---
+title: "Status de Entrega & Handoff"
+description: "Status vivo da evolução do produto Keep AI-Native — otimizado para handoff humano e para LLMs."
+---
+
+<Warning>
+**Fonte da verdade para handoff.** Atualize este arquivo sempre que um trabalho iniciar, terminar ou uma decisão mudar. Os demais docs (PRD/ADR/arquitetura) são baselines; esta página é o estado atual de entrega.
+</Warning>
+
+## Snapshot
+
+| Campo | Valor |
+|-------|-------|
+| **Última atualização** | 2026-07-29 (M1 fundação de plataforma entregue) |
+| **Direção de produto** | Adotada — evoluir o Keep para produto AI-native, compatível com o Keep atual |
+| **Arquitetura** | `Keep Evolved = Fundação Keep + Plano de Controle de IA (monólito modular) + MCP Tool Mesh` |
+| **Fase atual** | **M1 — Fundação de plataforma: CONCLUÍDO** (verificado ao vivo com Postgres) → próximo: M2 (MVP) |
+| **Status dos docs** | Baseline escrita e ratificada |
+| **Status do código** | `keep-aiops/` com Postgres+alembic, auth de tenant, policies persistidas, Helm, métricas; spike de outbox no Keep |
+| **Bloqueios** | Nenhum |
+
+## Resumo de um parágrafo (cole em outro LLM)
+
+Estamos evoluindo o Keep (https://github.com/keephq/keep) para um novo produto AIOps AI-native sem reescrever o núcleo. O Keep permanece o sistema de registro de alertas/incidentes/auth/workflows/providers. O novo plano de controle de IA (monólito modular primeiro) cuida de investigação, agents, RCA, RAG, decisão, policy e execução. O MCP Gateway é o único barramento de ferramentas. A policy é fail-closed; o MVP é suggest-only (sem mutate). Stack de agents: LangGraph para orquestração de investigação, LiteLLM para roteamento multi-modelo, ferramentas apenas via MCP Gateway — não LangChain clássico; CopilotKit fica só na UI. Docs em `docs/aiops/`. Plano adotado; M0 concluído (evento → investigação read-only → writeback na timeline do Keep); próxima fase é o M1. Não fazer fork do Keep. Reusar capacidades existentes; implementar só o que falta.
+
+## Decisões travadas
+
+| ID | Decisão | Doc |
+|----|---------|-----|
+| D1 | Evolução de produto compatível (não fork/rewrite) | [PRD-001](/aiops/prd/001-ai-native-aiops-platform), [Overview](/aiops/overview) |
+| D2 | Plano de controle de IA ao lado do Keep | [ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane) |
+| D3 | MCP como único barramento de tools dos agents | [ADR-0002](/aiops/adr/0002-mcp-as-tool-bus) |
+| D4 | Execução com policy-gating; MVP suggest-only | [ADR-0003](/aiops/adr/0003-policy-gated-execution) |
+| D5 | Bridge de eventos de domínio a partir do Keep | [ADR-0004](/aiops/adr/0004-domain-event-bridge) |
+| D6 | Knowledge/RAG fora do OLTP do Keep | [ADR-0005](/aiops/adr/0005-external-knowledge-engine) |
+| D7 | AI plane como monólito modular primeiro | [ADR-0006](/aiops/adr/0006-modular-monolith-ai-plane) |
+| D8 | Stack de agents: LangGraph + LiteLLM + MCP Gateway (não LangChain clássico) | [ADR-0007](/aiops/adr/0007-agent-framework-stack) |
+
+## Tracker de entregáveis
+
+Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `deferred`
+
+### Documentação (baseline)
+
+| Entregável | Status | Notas / caminho |
+|------------|--------|-----------------|
+| Estrutura de docs (PRD/ADR/Arquitetura/Roadmap) | `done` | `docs/aiops/` |
+| PRD-001 | `done` | Adotado |
+| ADR-0001 … ADR-0007 | `done` | Aceitos |
+| Conjunto de arquitetura | `done` | Baseline ativa |
+| Roadmap + MVP | `done` | Ativo |
+| Execution kickoff | `done` | [kickoff](/aiops/roadmap/execution-kickoff) |
+| RFC-0001 (inventário de capacidades) | `done` | [RFC-0001](/aiops/rfc/0001-keep-evolved-capabilities) — em revisão |
+| Este STATUS / doc de handoff | `done` | Atualizar continuamente |
+
+### Milestone M0 — Spike de arquitetura
+
+| Entregável | Status | Owner | Notas |
+|------------|--------|-------|-------|
+| Contrato de event envelope | `done` | — | [Event envelope](/aiops/contracts/event-envelope) + exemplos JSON; `name` tornado opcional após o spike ao vivo |
+| Spike de outbox/webhook no Keep | `done` | — | `keep/api/core/domain_events.py`, `keep/api/models/db/domain_event.py` + migração alembic; ativado por env `KEEP_DOMAIN_EVENTS_ENABLED` |
+| Scaffold `keep-aiops` (monólito modular) | `done` | — | `keep-aiops/` — `aiops-api` FastAPI com health + layout de módulos |
+| Keep client (ler incidente/alertas, escrever comentário/enrichment) | `done` | — | `keep-aiops/packages/keep_client/` (httpx, X-API-KEY) |
+| Stub do MCP Gateway + tools K8s de leitura | `done` | — | `keep-aiops/mcp_gateway/` — processo separado, policy fail-closed, modos K8s stub/live |
+| Esqueleto do FSM do orquestrador | `done` | — | `aiops_api/modules/orchestrator/` — `queued → gathering → rca_ready`, idempotente em (tenant, incident) |
+| Writeback na timeline do Keep | `done` | — | Comentário com RCA draft + enrichments `aiops.*` verificados via API real do Keep |
+| Demo kind + runbook | `done` | — | `keep-aiops/deploy/RUNBOOK.md` + `docker-compose.aiops.yml`; kind opcional (modo K8s live) |
+| OTel com `investigation_id` | `done` | — | Export console/OTLP; atributo de span verificado em trace ao vivo |
+
+**Critérios de saída do M0 — todos verificados ao vivo (2026-07-29, e2e em docker compose):**
+
+- [x] Incidente de teste qualificado cria uma Investigation de forma idempotente
+- [x] Pelo menos um item de evidência K8s coletado via MCP
+- [x] Timeline do Keep exibe a saída da investigação
+- [x] Parar o `aiops-api` não quebra a ingestão de alertas do Keep (HTTP 202 com ele fora; backlog reprocessado após restart)
+- [x] Trace OTel contém `investigation_id`
+
+### Milestone M1 — Fundação da plataforma
+
+| Entregável | Status | Notas |
+|------------|--------|-------|
+| Schema do banco AIOps | `done` | Postgres via alembic (`keep-aiops/alembic/`, revisões 0001+0002); compose com postgres:16 + job `aiops-migrate` |
+| Delegação de auth de tenant do Keep | `done` | `modules/auth/` — X-API-KEY validado via keep-api `/whoami` (cache TTL 60s, fail-closed 503); isolamento por tenant (404 cross-tenant); webhook HMAC isento |
+| Stub de policy suggest-only → policies persistidas | `done` | Tabela `policy` + seed `m0-suggest-only`; API `GET/PUT /v1/policies` + `POST /v1/policies:evaluate`; fail-closed default |
+| Helm `keep-aiops` | `done` | `keep-aiops/deploy/helm/keep-aiops/` — api+gateway, subchart postgres, migrate Job, HPA/PDB/NetworkPolicies, RBAC opcional; `helm lint`+`template` verdes |
+| Dashboards/alertas baseline | `done` | `/metrics` (keep_aiops_*), `deploy/observability/grafana-dashboard-aiops.json` + `prometheus-alerts-aiops.yml` |
+
+**Critérios de aceite do M1 — verificados (2026-07-29):**
+
+- [x] Testes de isolamento multi-tenant verdes (72/72 na suíte keep-aiops)
+- [x] Deployável em Kubernetes ao lado do Keep (`helm lint`/`helm template` em 3 perfis; migrações via hook Job)
+- [x] E2E ao vivo: incidente → investigação `rca_ready` no Postgres → writeback no Keep; auth 401/200; policy mutate=deny/read=allow; métricas vivas em `/metrics`
+
+### Milestone M2 — MVP
+
+| Entregável | Status | Notas |
+|------------|--------|-------|
+| Context Builder | `not_started` | |
+| Knowledge MVP (runbooks + histórico de incidentes) | `not_started` | |
+| MCP servers de leitura Obs + K8s | `not_started` | |
+| RCA draft writer → Keep | `not_started` | |
+| Painel de investigação na UI | `not_started` | |
+| Harness de avaliação com golden set | `not_started` | |
+| Aceite do MVP (AC1–AC7) | `not_started` | [MVP](/aiops/roadmap/mvp) |
+
+### Depois (M3+)
+
+| Entregável | Status |
+|------------|--------|
+| Especialistas multi-agent | `deferred` |
+| Remediação + aprovações | `deferred` |
+| Execução controlada (allowlist de mutate) | `deferred` |
+| Postmortems + loop de aprendizado | `deferred` |
+
+## Mapa do repo / código
+
+| Caminho | Propósito | Existe? |
+|---------|-----------|---------|
+| `docs/aiops/` | Docs de produto + arquitetura | **Sim** |
+| `keep/` | Backend Keep (reuso; spike de outbox adicionado, ativado por env) | Sim |
+| `keep-ui/` | Frontend Keep (painel de investigação depois) | Sim (upstream) |
+| `keep-aiops/` | Plano de controle de IA (monorepo: aiops_api, mcp_gateway, packages/keep_client, deploy) | **Sim** |
+
+## Como fazer handoff para outro LLM
+
+1. Leia este arquivo primeiro (`docs/aiops/STATUS.mdx`)
+2. Leia o [Execution kickoff](/aiops/roadmap/execution-kickoff)
+3. Leia os ADRs travados (0001–0006) apenas se for mudar arquitetura
+4. Continue o primeiro item `not_started` do milestone corrente, salvo bloqueio listado acima
+5. Após qualquer progresso relevante, atualize:
+   - As tabelas de status deste arquivo
+   - A data de **Última atualização**
+   - Bloqueios / próximas ações abaixo
+
+## Próximas ações (ordenadas)
+
+1. M2 (MVP): Context Builder (incidente+alertas+topologia+timeline)
+2. M2: Knowledge MVP (RAG sobre runbooks + histórico de incidentes)
+3. M2: MCP servers de leitura Obs; RCA draft com citações; painel de investigação na UI
+4. M2: harness de avaliação golden set; aceite AC1–AC7
+5. Opcional: PR upstream do spike de outbox do Keep (fino, ADR-0004); JWT bearer no aiops-api (hoje só API key)
+
+## Histórico de alterações
+
+| Data | Alteração |
+|------|-----------|
+| 2026-07-27 | Baseline de docs criada; plano adotado; STATUS de handoff criado; código não iniciado |
+| 2026-07-27 | ADR-0007: stack de agents = orquestrador LangGraph + LiteLLM + MCP Gateway; não LangChain clássico |
+| 2026-07-29 | **M0 concluído**: contrato de event envelope (+exemplos), spike de outbox/webhook no Keep, scaffold `keep-aiops`, keep-client, stub do MCP Gateway (K8s read), FSM do orquestrador, writeback na timeline, runbook de compose; todos os critérios de saída verificados ao vivo. Correção de contrato: `name` opcional (Keep permite incidentes sem nome) |
+| 2026-07-29 | RFC-0001 (inventário de capacidades) aberta para comentários; docs vivos traduzidos para português |
+| 2026-07-29 | **M1 concluído**: Postgres+alembic (0001/0002), auth de tenant via Keep `/whoami`, policies persistidas + API, Helm chart, métricas/dashboards/alertas; 72/72 testes verdes; e2e ao vivo com Postgres |

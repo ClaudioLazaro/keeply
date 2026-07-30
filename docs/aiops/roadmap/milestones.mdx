@@ -1,0 +1,198 @@
+---
+title: "Milestones"
+description: "Incremental 12–18 month delivery plan with goals, scope, tasks, risks, and acceptance criteria."
+---
+
+Team assumption: **3–6 engineers**, iterative production-ready delivery. Related: [MVP](/aiops/roadmap/mvp), [PRD-001](/aiops/prd/001-ai-native-aiops-platform).
+
+## Release timeline
+
+```text
+M0–M1   Foundations + event bridge + shadow investigations
+M2–M4   MVP investigate/RCA/RAG → multi-agent MCP → approvals
+M5–M7   Controlled execution → postmortems → enterprise hardening
+M8–M18  Scale, eval quality, more agents, upstream maturity
+```
+
+---
+
+## Milestone 0 — Architecture spike
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Prove external investigator with minimal Keep changes |
+| **Duration** | 2–3 weeks |
+| **Complexity** | M |
+| **Order** | 1 |
+
+**Scope:** Event bridge prototype; one read-only K8s MCP; investigation record; comment back to incident.
+
+**Technical tasks:**
+- Outbox/webhook spike PR against Keep
+- `keep-client` package
+- Orchestrator skeleton + kind demo
+
+**Dependencies:** Keep API token; cluster read SA  
+**Risks:** Event reliability; auth propagation  
+
+**Acceptance criteria:**
+- Test incident produces timeline comment with pod evidence
+
+---
+
+## Milestone 1 — Platform foundation
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Production skeleton of AI plane |
+| **Duration** | 4–6 weeks |
+| **Complexity** | L |
+| **Order** | after M0 |
+
+**Scope:** Orchestrator FSM, AIOps DB, OTel, tenant auth, policy stub (suggest-only), Helm chart.
+
+**Technical tasks:**
+- AIOps schema migrations
+- Auth delegation from Keep
+- Helm `keep-aiops`
+- Baseline dashboards/alerts
+
+**Dependencies:** M0 contracts  
+**Risks:** Over-splitting services too early  
+
+**Acceptance criteria:**
+- Multi-tenant isolation tests green
+- Deployable on Kubernetes beside Keep
+
+---
+
+## Milestone 2 — MVP autonomous investigation {#milestone-2--mvp-autonomous-investigation}
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Useful AI SRE assistant (not remediator) |
+| **Duration** | 6–8 weeks |
+| **Complexity** | XL |
+| **Order** | after M1 |
+
+**Scope:** See [MVP definition](/aiops/roadmap/mvp).
+
+**Technical tasks:**
+- Context Builder + Knowledge MVP
+- Obs + K8s read MCP servers
+- RCA draft writer → Keep
+- Investigation UI panel
+- Golden-set eval harness
+
+**Dependencies:** M1 platform; [ADR-0005](/aiops/adr/0005-external-knowledge-engine)  
+**Risks:** Hallucinated RCA; cost overruns  
+
+**Acceptance criteria:**
+- MVP AC1–AC7 met
+
+---
+
+## Milestone 3 — Multi-agent + MCP expansion
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Coordinator + specialists; broader read tools |
+| **Duration** | 6–8 weeks |
+| **Complexity** | L |
+| **Order** | after M2 |
+
+**Scope:** GitOps + Datadog/Prometheus/Loki tools; cost budgets; tool audit UX.
+
+**Acceptance criteria:**
+- ≥ 3 specialist agents in production path
+- Per-investigation cost budget enforced
+
+---
+
+## Milestone 4 — Policy + remediation planning
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Suggest remediations with risk and approvals |
+| **Duration** | 5–7 weeks |
+| **Complexity** | L |
+| **Order** | after M3 |
+
+**Scope:** Policy Engine GA; remediation objects; Slack/Keep approve path.
+
+**Acceptance criteria:**
+- Mutate blocked without approval
+- Approval audit complete
+
+---
+
+## Milestone 5 — Controlled execution
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Execute allowlisted safe actions |
+| **Duration** | 5–7 weeks |
+| **Complexity** | XL |
+| **Order** | after M4 |
+
+**Scope:** Restart deploy / scale HPA / silence-style actions via MCP or Keep workflows; rollback notes; prod default off.
+
+**Acceptance criteria:**
+- Fail-closed policy verified by chaos tests
+- Full audit for every execution
+
+---
+
+## Milestone 6 — Postmortems + learning
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Close the loop |
+| **Duration** | 4–6 weeks |
+| **Complexity** | M |
+| **Order** | after M5 |
+
+**Scope:** Auto postmortem on resolve; index outcomes; improve retrieval/ranking from feedback.
+
+**Acceptance criteria:**
+- Postmortem generated on resolve for opted-in tenants
+- Feedback affects future ranking
+
+---
+
+## Milestone 7 — Enterprise hardening
+
+| Field | Detail |
+|-------|--------|
+| **Goal** | Scale and broaden agents |
+| **Duration** | M11–M18 ongoing |
+| **Complexity** | XL |
+| **Order** | parallel after M4 |
+
+**Scope:** AWS/DB/Sec agents; SSO policy packs; eval harness CI; ~500 concurrent investigations target; air-gap LLM path design.
+
+---
+
+## Suggested implementation order
+
+1. Event bridge + outbox PR  
+2. AIOps DB + orchestrator FSM (suggest-only)  
+3. Context Builder + Keep client  
+4. MCP gateway + K8s/Obs read servers  
+5. Knowledge MVP  
+6. RCA draft → Keep timeline  
+7. UI investigation panel  
+8. Eval harness  
+9. Policy engine + approval UX  
+10. Execution allowlist  
+11. Postmortems + learning  
+12. Expand agents/clouds  
+
+## Future (post-18 months)
+
+- Causal discovery over continuous telemetry  
+- Blast-radius what-if simulation  
+- MCP marketplace / customer agents  
+- On-prem LLM packs  
+- SEV meeting bot narration  
+- Compliance evidence export packs  

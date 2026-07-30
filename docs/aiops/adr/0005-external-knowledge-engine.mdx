@@ -1,0 +1,50 @@
+---
+title: "ADR-0005: External Knowledge Engine"
+description: "RAG corpora and vector indexes live outside Keep's OLTP database in a dedicated Knowledge Engine."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / AI Platform |
+
+## Context
+
+Autonomous investigation needs retrieval over runbooks, RFCs, postmortems, prior incidents, Git history, and IaC. Storing embeddings and crawler state inside Keep's primary DB would bloat OLTP and entangle retention/ACL models.
+
+## Decision
+
+1. Ship a dedicated **Knowledge Engine** service with:
+   - Source connectors (docs, Git, Confluence/Notion, incident exports)
+   - Chunking/embedding pipeline
+   - Vector index (start with pgvector; allow Qdrant/Weaviate later)
+   - Query API with tenant filters and citations
+2. Keep remains source of truth for incident records; Knowledge Engine indexes **derivatives**
+3. Every retrieved chunk must carry source URI + ACL metadata; cross-tenant retrieval is forbidden
+4. RCA outputs and postmortems are re-indexed for learning loops
+
+## Alternatives considered
+
+1. **Embeddings columns in Keep Postgres** — couples workloads. Rejected for primary design.
+2. **Only LLM long-context dump of incident** — no institutional memory. Insufficient.
+3. **Fully external SaaS RAG only** — conflicts with self-hosted/vendor-neutral goals as sole option.
+
+## Consequences
+
+### Positive
+
+- Independent scaling and reprocessing
+- Cleaner security boundary for document ACLs
+- Fits sidecar strategy (ADR-0001)
+
+### Negative / trade-offs
+
+- Sync lag vs live incidents
+- Connector maintenance cost
+- Need freshness and tombstone semantics
+
+## References
+
+- [Service decomposition](/aiops/architecture/service-decomposition)
+- [Domain model](/aiops/architecture/domain-model)

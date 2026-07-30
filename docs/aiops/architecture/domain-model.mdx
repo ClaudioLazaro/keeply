@@ -1,0 +1,72 @@
+---
+title: "Domain Model"
+description: "AIOps domain entities, Keep linkages, and schema change guidance."
+---
+
+## Principles
+
+- Keep DB stays focused on alerts/incidents/workflows
+- AIOps DB stores investigations and AI artifacts
+- Link planes with IDs + enrichments, not duplicated incident rows
+
+## AIOps entities
+
+| Entity | Purpose |
+|--------|---------|
+| **Investigation** | Lifecycle container for an incident investigation |
+| **InvestigationPlan** | Ordered steps and agent assignments |
+| **Evidence** | Tool output / observation with trust score |
+| **Hypothesis** | Causal claim with supporting/refuting evidence |
+| **RCAReport** | Narrative + causal chain + citations |
+| **RemediationSuggestion** | Proposed action + risk + rollback |
+| **ExecutionPlan** | Ordered actions + approval requirements |
+| **Approval** | Human/policy decision record |
+| **ActionExecution** | Audited tool invocation result |
+| **Postmortem** | Generated learning artifact |
+| **KnowledgeDocument** | Indexed source chunk metadata |
+| **AgentRun** | Cost/latency/tool telemetry per agent |
+| **Policy / PolicyBinding** | Action class rules by tenant/env/role |
+| **LearningRecord** | Feedback and outcome labels |
+
+### Investigation status machine
+
+`queued → planning → gathering → hypothesizing → rca_ready → remediation_pending → executing → done`
+
+Terminal: `failed`, `cancelled`. Mode: `suggest | assisted | auto`.
+
+## Keep-side linkages (minimal)
+
+Prefer enrichments / JSON pointers over heavy migrations:
+
+| Key | Meaning |
+|-----|---------|
+| `aiops.investigation_id` | Active investigation |
+| `aiops.status` | Mirrored status for UI badges |
+| `aiops.rca_summary` | Short summary for lists |
+
+Optional upstream tables:
+
+- `domain_event_outbox`
+- `AIInvestigationLink` (or reuse/extend AI suggestion feedback patterns)
+
+## Schema guidance
+
+### Keep (minimal)
+
+| Change | Why |
+|--------|-----|
+| Outbox table | Reliable events |
+| Enrichment keys / small columns | UI without cross-DB joins |
+| Comment support for structured AI notes | Human audit |
+
+### AIOps Postgres
+
+- Unique active investigation on `(tenant_id, incident_id)` (or allow history with partial unique on open statuses)
+- Indexes on `(tenant_id, status, updated_at)`
+- Evidence payloads in object storage; DB keeps refs + summaries
+
+### Vector store
+
+- Start: pgvector
+- Scale: Qdrant / Weaviate
+- Mandatory tenant filter on every query

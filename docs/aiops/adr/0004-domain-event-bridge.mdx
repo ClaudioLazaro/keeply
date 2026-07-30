@@ -1,0 +1,58 @@
+---
+title: "ADR-0004: Domain Event Bridge"
+description: "Keep publishes durable domain events (outbox/webhooks); AI plane consumes them asynchronously."
+---
+
+| Field | Value |
+|-------|-------|
+| **Status** | Accepted |
+| **Date** | 2026-07-27 |
+| **Deciders** | Architecture / Platform |
+
+## Context
+
+Investigation should start when incidents are created/updated/resolved. Today Keep notifies UI via Pusher and triggers workflows in-process; there is no general domain event bus (workflow path even notes events “should” be published).
+
+Polling Keep APIs is simple but laggy and costly. Embedding orchestrator calls inside `process_event_task` couples AI to ingest latency.
+
+## Decision
+
+1. Introduce a **thin upstream-friendly event hook** in Keep:
+   - Prefer **transactional outbox** table written beside incident/alert mutations
+   - Deliver via **webhook** and/or **Redis Streams** (aligned with existing Redis/ARQ)
+2. AI plane runs an **event-bridge** consumer with idempotency keys
+3. Abstract the transport behind an interface so Kafka/NATS can replace Redis Streams later
+4. Keep critical path must not await AI plane responses
+
+Initial event set:
+
+- `alert.processed` (optional)
+- `incident.created`
+- `incident.updated`
+- `incident.resolved`
+- `incident.severity_escalated` (optional)
+
+## Alternatives considered
+
+1. **Poll incidents API** — simplest, poor latency/load. Acceptable only for spike.
+2. **Inline orchestrator call in process_event** — couples failure domains. Rejected.
+3. **Only reuse Pusher** — UI channel, not a durable integration bus. Rejected as sole mechanism.
+
+## Consequences
+
+### Positive
+
+- Reliable, replayable triggers
+- Clear extension point for other consumers (not only AI)
+- Good upstream contribution candidate
+
+### Negative / trade-offs
+
+- Requires a small Keep core PR
+- Outbox publisher/worker operational ownership
+- Schema versioning discipline
+
+## References
+
+- [Data and event flow](/aiops/architecture/data-and-event-flow)
+- [Upstream vs extension](/aiops/roadmap/upstream-vs-extension)

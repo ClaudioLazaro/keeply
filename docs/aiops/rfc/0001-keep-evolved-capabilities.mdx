@@ -1,0 +1,259 @@
+---
+title: "RFC-0001: Keep Evolved — Inventário de Capacidades e Plano de Entrega"
+description: "Request for Comments sobre o inventário completo de capacidades do produto Keep Evolved: recursos nativos do Keep, capacidades AIOps já entregues (M0) e o roadmap planejado (M1–M7+)."
+---
+
+| Campo | Valor |
+|-------|-------|
+| **RFC** | 0001 |
+| **Título** | Keep Evolved — Inventário de Capacidades e Plano de Entrega |
+| **Status** | **Rascunho — aberto para comentários** |
+| **Criada em** | 2026-07-29 |
+| **Autores** | Plataforma / IA / SRE |
+| **Revisores** | Engenharia, Produto, Segurança, SREs de plantão |
+| **Relacionados** | [PRD-001](/aiops/prd/001-ai-native-aiops-platform) · [Índice de ADRs](/aiops/adr/index) · [STATUS](/aiops/STATUS) · [Milestones](/aiops/roadmap/milestones) |
+| **Prazo para comentários** | 2026-08-12 (2 semanas) |
+
+<Warning>
+Esta RFC solicita revisão do **escopo de capacidades e do sequenciamento de entregas**, e não das decisões de arquitetura já ratificadas (D1–D8 no [STATUS](/aiops/STATUS)). Comentários são bem-vindos sobre: capacidades faltantes, priorização incorreta, riscos de compatibilidade e dimensionamento dos milestones.
+</Warning>
+
+## 1. Resumo
+
+Esta RFC consolida, em um único documento revisável, **tudo o que o produto faz hoje** (Keep 0.54.2 nativo), **tudo o que já foi entregue** na evolução AI-nativa (spike M0, verificado ao vivo) e **tudo o que está planejado** até M7+ (12–18 meses). O objetivo é permitir que os stakeholders contestem escopo e sequenciamento antes dos compromissos de M1–M2.
+
+Nenhuma arquitetura nova é proposta aqui. A fórmula permanece:
+
+```text
+Keep Evolved = Fundação Keep + Plano de Controle de IA (monólito modular) + MCP Tool Mesh
+```
+
+## 2. Contexto e motivação
+
+- O [PRD-001](/aiops/prd/001-ai-native-aiops-platform) definiu a direção de produto; os ADRs 0001–0007 travaram a arquitetura; o M0 provou o caminho ponta a ponta.
+- As capacidades estão hoje espalhadas entre README, docs de usuário, código, PRD e roadmap — **não existe uma fonte única enumerando "o que o produto faz"**.
+- Antes de alocar pessoas em M1/M2, precisamos de acordo de que (a) nada do que é nativo está sendo abandonado, (b) o conjunto de novas capacidades é o correto e (c) a ordem de entrega está certa.
+
+## 3. Proposta
+
+Adotar este inventário como o **mapa canônico de capacidades** do produto, com três estados:
+
+| Estado | Significado | Governança |
+|--------|-------------|------------|
+| **Nativa** | Existe no Keep 0.54.2; sistema de registro | Protegida pelo contrato de compatibilidade (§6) |
+| **Entregue** | Código do M0 integrado, verificado ponta a ponta | Mantida; regressões bloqueiam os próximos milestones |
+| **Planejada** | Escopo do roadmap M1–M7+ | Esta RFC é o portão de aprovação do sequenciamento |
+
+### 3.1 Seção A — Capacidades nativas (existentes)
+
+#### A.1 Ingestão e integrações
+
+| Capacidade | Detalhe |
+|------------|---------|
+| Agregação de alertas | **132 providers** (Datadog, Grafana, Prometheus, CloudWatch, PagerDuty, Zabbix, Sentry, Splunk etc.) |
+| Ingestão push e pull | Webhooks genéricos + polling agendado por provider |
+| Integrações bidirecionais | `PROVIDER_METHODS`: criar ticket, notificar Slack/Teams, atualizar status na origem |
+| Provider de webhook | Endpoint genérico `/alerts/event/{provider_type}` |
+| Simulação de alertas | `scripts/simulate_alerts.*`, playground |
+
+#### A.2 Processamento de alertas
+
+| Capacidade | Detalhe |
+|------------|---------|
+| Deduplicação | Regras por fingerprint, dedup total/parcial (`routes/deduplications.py`) |
+| Enriquecimento | Extração (regex), mapping (tabelas de lookup), enrichments arbitrários |
+| Regras de correlação | Rules engine baseado em CEL que agrupa alertas em incidentes |
+| Correlação por topologia | Agrupa por conexões de serviços no grafo de topologia |
+| Fingerprints | Identidade estável do alerta para dedup/correlação |
+| Janelas de manutenção | Silenciamento agendado |
+| Modelo de severidade/status | `critical/high/warning/info/low` × `firing/acknowledged/resolved/...` |
+| Busca e filtragem | CEL, facets, presets salvos |
+| Trilha de auditoria | Histórico de eventos por alerta e por incidente |
+| Tags | Etiquetagem de alertas/incidentes |
+
+#### A.3 Gestão de incidentes
+
+| Capacidade | Detalhe |
+|------------|---------|
+| Ciclo de vida completo | Criar, atualizar, merge, split, atribuir, mudar severidade/status, resolver |
+| Incidentes preditivos | Flag `is_predicted` + confirmação manual |
+| Comentários/timeline | Atividade de auditoria por incidente |
+| Incidentes por regra | Criação automática via regras de correlação e topologia |
+| Same-in-the-past | Detecção de incidentes recorrentes |
+
+#### A.4 Automação (workflows)
+
+| Capacidade | Detalhe |
+|------------|---------|
+| Workflows em YAML | "GitHub Actions para alertas" — triggers: alerta, incidente, manual, intervalo |
+| Steps/conditions/actions | Condições threshold, stddev, assert; ações via providers |
+| Throttling | Ex.: `one_until_resolved` |
+| Templates | Mustache (chevron), funções customizadas (`keep/functions`) |
+| Histórico de execuções | Rastreamento de execuções de workflow |
+
+#### A.5 IA nativa (pré-AIOps)
+
+| Capacidade | Detalhe |
+|------------|---------|
+| AI Incident Assistant | Chat contextual sobre o incidente |
+| AI Workflow Assistant | Geração/edição de workflows em linguagem natural |
+| Correlação semi-automática | IA sugere agrupamentos, humano aprova (`/incidents/ai/suggest` + `/commit`) |
+| Nomes/resumos gerados por IA | `ai_generated_name`, `generated_summary` |
+| Multi-LLM | OpenAI, Anthropic, Gemini, DeepSeek, Ollama, LlamaCPP, Grok, vLLM |
+| Avaliação de alertas | `docs/alertevaluation` |
+
+#### A.6 Plataforma
+
+| Capacidade | Detalhe |
+|------------|---------|
+| Multi-tenancy + RBAC | Identity managers: Keycloak, Auth0, OAuth2 Proxy, DB, NO_AUTH |
+| API keys + escopos | `read:incident`, `write:incident` etc. |
+| Gestão de segredos | File, DB, AWS SM, GCP SM, Vault, Kubernetes |
+| Topologia de serviços | Ingestão e visualização do grafo de serviços |
+| Dashboards | Nativos + Grafana provisionado |
+| UI em tempo real | Pusher/Soketi |
+| Busca avançada | Elasticsearch opcional |
+| CLI | `keep` (click) — providers, workflows, alertas |
+| Observabilidade | OpenTelemetry, métricas Prometheus |
+| Deploy | Docker Compose, Helm/K8s, Render |
+| Migrações | Alembic; MySQL/Postgres/SQLite |
+
+### 3.2 Seção B — Novas capacidades (Keep Evolved)
+
+#### B.1 Entregues — M0 (verificado ao vivo em 2026-07-29)
+
+| Capacidade | Local |
+|------------|-------|
+| Domain event bridge (outbox + webhook HMAC) | `keep/api/core/domain_events.py`, ativado por env |
+| Contrato de eventos CloudEvents | [Event envelope](/aiops/contracts/event-envelope) |
+| Plano de Controle de IA (monólito modular `aiops-api`) | `keep-aiops/aiops_api/` |
+| Consumidor do event bridge (dedupe, verificação HMAC) | `modules/event_bridge/` |
+| FSM do orquestrador `queued → gathering → rca_ready` | `modules/orchestrator/` |
+| Investigações idempotentes por (tenant, incident) | sqlmodel + constraint única |
+| MCP Gateway (processo separado, fail-closed) | `keep-aiops/mcp_gateway/` |
+| Ferramentas K8s de leitura (`get_pods/get_events/get_logs`) | modos stub + live |
+| Stub de policy suggest-only (mutate negado) | `modules/policy/` |
+| RCA draft → timeline do Keep + enrichments `aiops.*` | writeback via `keep_client` |
+| Pacote Keep client (leitura/escrita REST) | `packages/keep_client/` |
+| Auditoria de tool calls (JSON estruturado) | `mcp_gateway/audit.py` |
+| OTel com `investigation_id` | export console/OTLP |
+| Isolamento de falha (Keep ingere sem o AI plane; replay de backlog) | verificado ponta a ponta |
+| Overlay de compose + runbook reproduzível | `keep-aiops/deploy/` |
+
+#### B.2 Próximas — M1 (fundação da plataforma)
+
+- Banco AIOps em Postgres (schema dedicado)
+- Delegação de autenticação de tenant do Keep (JWT/JWKS)
+- Policies persistidas (suggest-only)
+- Helm chart `keep-aiops`
+- Dashboards/alertas baseline do AI plane
+
+#### B.3 MVP — M2
+
+- Auto-start de investigação por política de tenant (ex.: P1+)
+- Context Builder (incidente + alertas + topologia + timeline)
+- Knowledge Engine: RAG sobre runbooks + incidentes históricos
+- MCP de leitura de observabilidade (Prometheus, Datadog, Grafana, Loki)
+- RCA draft com citações de evidências
+- Painel de investigação na UI (evidências + hipóteses no keep-ui)
+- Feedback humano (útil / não útil)
+- Harness de avaliação com golden set
+- Modos por tenant: `off / suggest / assisted / auto`
+
+#### B.4 Pós-MVP — M3–M7
+
+| Milestone | Capacidades |
+|-----------|-------------|
+| **M3** Multi-agent | Coordinator + especialistas (supervisionados, não swarm); MCP GitOps (GitHub/GitLab/ArgoCD/Terraform); budgets de custo por investigação; UX de auditoria de tools |
+| **M4** Remediação | Policy Engine GA; sugestões de remediação com risco, blast radius e rollback; aprovação via Slack/Keep com trilha de auditoria |
+| **M5** Execução controlada | Ações allowlisted (restart de deploy, scale de HPA, silences) via MCP ou workflows Keep; notas de rollback; default off em prod; chaos tests fail-closed |
+| **M6** Aprendizado | Postmortems automáticos ao resolver; indexação de outcomes; feedback melhora o ranking de hipóteses |
+| **M7** Enterprise | Agents de AWS/DB/Segurança/Rede/Custo; policy packs SSO; avaliação em CI; ~500 investigações concorrentes; design de LLM air-gapped |
+
+#### B.5 Futuro (pós-18 meses)
+
+Descoberta causal contínua · simulação what-if de blast radius · MCP marketplace (agents criados por clientes) · LLM packs on-prem · narração por bot em reuniões de SEV · exportação de evidências de compliance
+
+## 4. Totais de capacidades
+
+```text
+Total = ~40 nativas (Keep 0.54.2, sistema de registro)
+      +  11 entregues (M0, verificadas ao vivo)
+      + ~35 planejadas (M1–M7+, roadmap de 12–18 meses)
+```
+
+## 5. Explicitamente fora de escopo (reafirmado do PRD-001)
+
+- Reescrever o núcleo de alertas/incidentes/workflows do Keep
+- Fork incompatível; quebrar APIs REST, fluxos de auth ou YAML de workflows
+- Substituir workflows Keep por agents em toda a automação
+- Remediação autônoma irrestrita em produção por padrão
+- Stack de LLM proprietária e fechada
+- Inferência causal contínua nível Davis no MVP
+
+## 6. Garantias de compatibilidade (inegociáveis)
+
+| Garantia | Significado |
+|----------|-------------|
+| Compatibilidade de API | Integrações REST/auth existentes continuam funcionando |
+| Compatibilidade de dados | Tenants, alertas, incidentes e workflows existentes permanecem válidos |
+| Compatibilidade comportamental | Modo Keep vanilla funciona com o AI plane desligado/ausente |
+| Caminho de upgrade | Instalações atuais adotam o novo produto incrementalmente (feature flags) |
+| Isolamento de falha | Ingestão do Keep não é afetada quando o AI plane está fora (verificado no M0) |
+
+Toda capacidade da Seção A DEVE continuar funcionando com todos os componentes da Seção B desligados ou ausentes.
+
+## 7. Rollout e escada de adoção
+
+```text
+M0 pronto → M1 fundação → M2 MVP (suggest) → M3 multi-agent → M4 aprovações
+          → M5 execução assisted/auto (não-prod primeiro) → M6 aprendizado → M7 enterprise
+```
+
+Modos por tenant: `off → suggest → assisted → auto`. Modo shadow precede o writeback; mutate em produção permanece opt-in ([ADR-0003](/aiops/adr/0003-policy-gated-execution)).
+
+## 8. Riscos e mitigações
+
+| Risco | Mitigação |
+|-------|-----------|
+| RCA alucinado / ações inseguras | Citações, scoring de evidências, policy fail-closed |
+| Prompt injection via tools/docs | I/O de tools não confiável; checagens duplas antes de mutate |
+| Fricção de upgrade do Keep | Superfície upstream mínima; estratégia sidecar ([ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane)) |
+| Explosão de custos | Budgets de steps/custo/tempo por investigação (M3) |
+| Baixa confiança do usuário | Escada shadow → suggest → assisted → auto |
+| Scope creep além do inventário | Esta RFC é o portão; adições exigem emenda à RFC |
+
+## 9. Alternativas consideradas
+
+| Alternativa | Por que não |
+|-------------|-------------|
+| Entregar novas capacidades sem inventário consolidado | Revisão impossível; fronteira nativo-vs-novo se erode |
+| Incorporar o inventário ao PRD-001 | PRD declara requisitos; este é o mapa vivo de capacidades — ciclos de vida diferentes |
+| Versionar o inventário apenas em código | Não revisável por stakeholders não-engenharia |
+
+## 10. Perguntas abertas para os revisores
+
+1. Falta alguma **capacidade nativa** na Seção A?
+2. O **painel de investigação** (M2) deve ser embutido no keep-ui ou um app shell separado? (pergunta aberta #2 do PRD)
+3. O **M3 multi-agent** está corretamente ordenado antes das aprovações do M4, ou as aprovações deveriam vir antes para desbloquear design partners?
+4. Transporte de eventos na v1: manter webhook-only ou migrar para Redis Streams no M1? (pergunta aberta #1 do PRD)
+5. Quais capacidades precisam de **evidência de SSO/compliance** antes do M7 na sua organização?
+
+## 11. Decisão solicitada
+
+1. **Aprovar** este inventário como o mapa canônico de capacidades (com emendas dos comentários)
+2. **Aprovar** o sequenciamento M1–M2 como escopo comprometido
+3. **Reconhecer** M3–M7 como direcional (reconfirmado em cada portão de milestone)
+
+## 12. Registro de comentários
+
+| Data | Autor | Comentário | Resolução |
+|------|-------|------------|-----------|
+| _aguardando comentários_ | | | |
+
+## 13. Histórico de alterações
+
+| Data | Alteração |
+|------|-----------|
+| 2026-07-29 | RFC-0001 redigida a partir do inventário de capacidades (nativas + M0 entregue + roadmap) |
+| 2026-07-29 | Documento traduzido para português |

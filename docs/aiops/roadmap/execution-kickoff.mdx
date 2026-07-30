@@ -1,0 +1,79 @@
+---
+title: "Execution Kickoff"
+description: "Adopted plan ratification and immediate M0 execution checklist for the Keep-compatible AI-native product evolution."
+---
+
+## Decision adopted
+
+We will evolve Keep into a **new AI-native AIOps product**, compatible with current Keep, using this architecture:
+
+```text
+Keep Evolved = Keep Foundation + AI Control Plane (modular monolith) + MCP Tool Mesh
+```
+
+| Decision | ADR / Doc |
+|----------|-----------|
+| Compatible product evolution (not fork/rewrite) | [PRD-001](/aiops/prd/001-ai-native-aiops-platform), [Overview](/aiops/overview) |
+| AI control plane beside Keep | [ADR-0001](/aiops/adr/0001-sidecar-ai-control-plane) |
+| MCP as sole tool bus | [ADR-0002](/aiops/adr/0002-mcp-as-tool-bus) |
+| Policy-gated execution | [ADR-0003](/aiops/adr/0003-policy-gated-execution) |
+| Domain event bridge | [ADR-0004](/aiops/adr/0004-domain-event-bridge) |
+| External knowledge/RAG | [ADR-0005](/aiops/adr/0005-external-knowledge-engine) |
+| Modular monolith first | [ADR-0006](/aiops/adr/0006-modular-monolith-ai-plane) |
+| MVP scope | [MVP](/aiops/roadmap/mvp) |
+
+**Status:** Adopted — ready for M0 execution.
+
+Track live progress in **[STATUS — Delivery & handoff](/aiops/STATUS)** (source of truth for humans and LLM handoff).
+
+## Working rules
+
+1. Reuse Keep for alerts, incidents, auth, workflows, providers, timeline
+2. Build only net-new AIOps capabilities in the AI plane
+3. Keep must work with AI plane disabled
+4. No mutate tools in MVP
+5. Prefer thin Keep PRs for contracts; put product AI logic in `keep-aiops`
+
+## M0 — Architecture spike (now)
+
+**Goal:** incident in Keep → event → read-only investigation → comment/evidence back in Keep.
+
+| # | Task | Outcome |
+|---|------|---------|
+| 1 | Define event envelope (`incident.created/updated/resolved`) | Contract doc + JSON examples |
+| 2 | Keep outbox/webhook spike (thin PR) | Events leave Keep reliably |
+| 3 | Scaffold `keep-aiops` modular monolith | `aiops-api` with health + module layout |
+| 4 | Keep client (auth + incident/alert read + comment/enrichment write) | Reusable package |
+| 5 | Stub MCP Gateway + K8s read tools | `get_pods` / `get_events` / `get_logs` |
+| 6 | Orchestrator FSM skeleton (`queued → gathering → rca_ready`) | Persisted investigation |
+| 7 | Writeback to Keep timeline | Visible RCA/evidence comment |
+| 8 | kind demo + runbook | Reproducible end-to-end |
+
+**M0 exit criteria**
+
+- [ ] Qualifying test incident creates an Investigation idempotently
+- [ ] At least one K8s evidence item collected via MCP
+- [ ] Keep timeline shows investigation output
+- [ ] Stopping `aiops-api` does not break Keep alert ingest
+- [ ] OTel trace contains `investigation_id`
+
+## Immediate ownership suggestions
+
+| Track | Focus |
+|-------|-------|
+| Platform | Event bridge + Helm/compose wiring |
+| AI | Orchestrator FSM + context pack |
+| Fullstack | Investigation panel shell / timeline writeback UX |
+| Shared | OpenAPI contracts + auth propagation |
+
+## What comes right after M0
+
+1. **M1** — production skeleton (DB, tenant auth, suggest-only policy, Helm)
+2. **M2** — MVP ([definition](/aiops/roadmap/mvp)): RAG + Obs/K8s read + RCA draft + UI panel + evals
+
+## Explicitly deferred until after MVP
+
+- Auto-remediation / mutate tools
+- Broad AWS specialist agent
+- Microservice split of orchestrator internals
+- Air-gapped LLM packs
