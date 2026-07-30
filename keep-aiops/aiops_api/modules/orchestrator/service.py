@@ -324,50 +324,54 @@ def _gather_evidence(session, investigation: Investigation, settings: Settings) 
         catalog = _fetch_tool_catalog(client, settings.mcp_gateway_url)
         for tool in GATHER_TOOLS:
             arguments = _default_arguments(tool, pods_result)
-            try:
-                outcome = _invoke_tool(
-                    client,
-                    settings.mcp_gateway_url,
-                    catalog,
-                    tool,
-                    investigation.tenant_id,
-                    investigation.id,
-                    arguments,
-                )
-                result, audit_id = outcome.get("result"), outcome.get("audit_id")
-                metrics.mcp_tool_calls.labels(tool=tool, outcome="success").inc()
-                if tool == "get_pods":
-                    pods_result = result
-                record = Evidence(
-                    investigation_id=investigation.id,
-                    tool=tool,
-                    summary=_summarize(tool, result),
-                    payload={"arguments": arguments, "result": result, "audit_id": audit_id},
-                )
-            except PolicyDenied as exc:
-                # Policy denial on a read tool is a misconfiguration: record the
-                # gap and keep gathering (fail-closed already prevented the call).
-                metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
-                metrics.evidence_gaps.labels(tool=tool).inc()
-                record = Evidence(
-                    investigation_id=investigation.id,
-                    tool=tool,
-                    summary=f"{tool}: evidence gap — policy denied ({exc.reason})",
-                    payload={"arguments": arguments, "error": str(exc)},
-                )
-            except Exception as exc:  # noqa: BLE001 — tolerate individual tool failure
-                metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
-                metrics.evidence_gaps.labels(tool=tool).inc()
-                logger.warning(
-                    "tool invocation failed, recording evidence gap",
-                    extra={"tool": tool, "investigation_id": investigation.id, "error": str(exc)},
-                )
-                record = Evidence(
-                    investigation_id=investigation.id,
-                    tool=tool,
-                    summary=f"{tool}: evidence gap — {type(exc).__name__}: {exc}",
-                    payload={"arguments": arguments, "error": f"{type(exc).__name__}: {exc}"},
-                )
+            with investigation_span(investigation.id, name=f"mcp.tool.{tool}", tool=tool) as tool_span:
+                try:
+                    outcome = _invoke_tool(
+                        client,
+                        settings.mcp_gateway_url,
+                        catalog,
+                        tool,
+                        investigation.tenant_id,
+                        investigation.id,
+                        arguments,
+                    )
+                    result, audit_id = outcome.get("result"), outcome.get("audit_id")
+                    metrics.mcp_tool_calls.labels(tool=tool, outcome="success").inc()
+                    tool_span.set_attribute("outcome", "success")
+                    if tool == "get_pods":
+                        pods_result = result
+                    record = Evidence(
+                        investigation_id=investigation.id,
+                        tool=tool,
+                        summary=_summarize(tool, result),
+                        payload={"arguments": arguments, "result": result, "audit_id": audit_id},
+                    )
+                except PolicyDenied as exc:
+                    # Policy denial on a read tool is a misconfiguration: record the
+                    # gap and keep gathering (fail-closed already prevented the call).
+                    metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
+                    metrics.evidence_gaps.labels(tool=tool).inc()
+                    tool_span.set_attribute("outcome", "policy_denied")
+                    record = Evidence(
+                        investigation_id=investigation.id,
+                        tool=tool,
+                        summary=f"{tool}: evidence gap — policy denied ({exc.reason})",
+                        payload={"arguments": arguments, "error": str(exc)},
+                    )
+                except Exception as exc:  # noqa: BLE001 — tolerate individual tool failure
+                    metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
+                    metrics.evidence_gaps.labels(tool=tool).inc()
+                    tool_span.set_attribute("outcome", "error")
+                    logger.warning(
+                        "tool invocation failed, recording evidence gap",
+                        extra={"tool": tool, "investigation_id": investigation.id, "error": str(exc)},
+                    )
+                    record = Evidence(
+                        investigation_id=investigation.id,
+                        tool=tool,
+                        summary=f"{tool}: evidence gap — {type(exc).__name__}: {exc}",
+                        payload={"arguments": arguments, "error": f"{type(exc).__name__}: {exc}"},
+                    )
             session.add(record)
             evidence.append(record)
     return evidence
@@ -390,7 +394,10 @@ def _query_knowledge_safe(investigation: Investigation, evidence: list[Evidence]
         return []
     query = " ".join(item.summary for item in evidence)[:500] or investigation.incident_id
     try:
-        return list(query_knowledge(investigation.tenant_id, query, k=5))
+        with investigation_span(investigation.id, name="knowledge.retrieve", query=query) as span:
+            results = list(query_knowledge(investigation.tenant_id, query, k=5))
+            span.set_attribute("results_count", len(results))
+            return results
     except Exception:  # noqa: BLE001
         logger.exception("knowledge retrieval failed", extra={"investigation_id": investigation.id})
         return []

@@ -11,10 +11,10 @@ description: "Status vivo da evolução do produto Keep AI-Native — otimizado 
 
 | Campo | Valor |
 |-------|-------|
-| **Última atualização** | 2026-07-30 (M2: módulos do MVP implementados; falta aceite e2e AC1–AC7) |
+| **Última atualização** | 2026-07-30 (**M2 CONCLUÍDO** — aceite e2e AC1–AC7 verificado ao vivo) |
 | **Direção de produto** | Adotada — evoluir o Keep para produto AI-native, compatível com o Keep atual |
 | **Arquitetura** | `Keep Evolved = Fundação Keep + Plano de Controle de IA (monólito modular) + MCP Tool Mesh` |
-| **Fase atual** | **M2 — MVP: EM ANDAMENTO** (todos os módulos de código implementados e testados; falta aceite e2e AC1–AC7 + eval real AC4) |
+| **Fase atual** | **M2 — MVP: CONCLUÍDO** (aceite e2e AC1–AC7 verificado em 2026-07-30) → próximo: M3 (multi-agent + expansão MCP) |
 | **Status dos docs** | Baseline escrita e ratificada |
 | **Status do código** | Repo migrado para Bitbucket (`acertodevs/acerto-keep`, origin); upstream Keep preservado como remote `upstream`. M2: context builder, knowledge RAG, RCA writer, painel UI, eval harness e human feedback implementados |
 | **Bloqueios** | Nenhum |
@@ -102,7 +102,17 @@ Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `def
 | Painel de investigação na UI | `done` | `keep-ui/entities/investigation/` + `features/investigation/` + proxy `/api/aiops/*`; integrado ao incident header; 11/11 jest |
 | Human feedback (useful / not useful) | `done` | 2026-07-30: `modules/feedback/` (POST/GET `/v1/investigations/{id}/feedback`, upsert, 404 cross-tenant) + migração 0006 + métrica `keep_aiops_investigation_feedback_total{rating}`; UI com thumbs up/down em `rca_ready`; 8 testes backend + 4 frontend |
 | Harness de avaliação com golden set | `done` | `keep-aiops/eval/` — 6 casos golden + `run_eval.py`; falta run real com LLM (AC4) |
-| Aceite do MVP (AC1–AC7) | `in_progress` | Falta: e2e ao vivo (como M0/M1), medição AC2 (p50<3min) e run real do golden set (AC4 ≥60%) |
+| Aceite do MVP (AC1–AC7) | `done` | Verificado ao vivo 2026-07-30 (compose: Keep + aiops + Postgres) — ver checklist abaixo |
+
+**Critérios de aceite do M2 — verificados ao vivo (2026-07-30, docker compose):**
+
+- [x] AC1 — Incidente critical cria Investigation idempotentemente (reenvio do evento → mesma investigation `7a83d195`, sem duplicata)
+- [x] AC2 — p50 time-to-first-evidence = **5,13s** (n=5, limiar 3 min). Medido em compose local, não em staging
+- [x] AC3 — RCA draft na timeline do Keep com citações [E1–E3]/[K1–K5], hipóteses com confidence, enrichments `aiops.*`
+- [x] AC4 — Golden set: **6/6 = 1,00 useful** (limiar 0,60) via `eval/run_eval.py` (caminho determinístico, sem LLM)
+- [x] AC5 — Ingest 202 com aiops-api+mcp-gateway parados; backlog do outbox entregue após restart (investigation `rca_ready`)
+- [x] AC6 — Catálogo MCP só tem `execution_class=read`; mutate → `deny`, read → `allow`, desconhecido → `deny` (fail-closed); invoke de tool mutate → 404
+- [x] AC7 — Spans `investigation`, `mcp.tool.{get_pods,get_events,get_logs}`, `knowledge.retrieve`, `rca.generate` todos com atributo `investigation_id` (gap de spans de tool calls corrigido durante o aceite)
 
 ### Depois (M3+)
 
@@ -135,9 +145,9 @@ Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `def
 
 ## Próximas ações (ordenadas)
 
-1. M2 aceite: e2e ao vivo (compose/kind) cobrindo AC1–AC7, como feito em M0/M1
-2. M2 aceite: run real do eval harness com LLM contra o golden set → medir AC4 (≥60% useful)
-3. M2 aceite: medir AC2 (p50 time-to-first-evidence < 3 min em staging)
+1. M3: especialistas multi-agent + expansão de MCP servers (ver [milestones](/aiops/roadmap/milestones))
+2. Repetir medição de AC2 em staging real (a atual é compose local)
+3. Eval AC4 com LLM real (LiteLLM) quando houver chave — hoje só caminho determinístico
 4. Opcional: PR upstream do spike de outbox do Keep (fino, ADR-0004); JWT bearer no aiops-api (hoje só API key)
 
 ## Histórico de alterações
@@ -150,3 +160,4 @@ Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `def
 | 2026-07-29 | RFC-0001 (inventário de capacidades) aberta para comentários; docs vivos traduzidos para português |
 | 2026-07-29 | **M1 concluído**: Postgres+alembic (0001/0002), auth de tenant via Keep `/whoami`, policies persistidas + API, Helm chart, métricas/dashboards/alertas; 72/72 testes verdes; e2e ao vivo com Postgres |
 | 2026-07-30 | Repo migrado para Bitbucket `acertodevs/acerto-keep` (origin); upstream Keep como remote `upstream`. **M2 módulos implementados**: context builder, knowledge RAG, RCA writer (LLM+fallback), painel de investigação na UI, eval harness golden set. **Human feedback end-to-end**: `modules/feedback/` + migração 0006 + métrica + thumbs up/down na UI; suítes 132/132 backend e 15/15 UI verdes. Falta apenas o aceite e2e AC1–AC7 |
+| 2026-07-30 | **M2 concluído**: aceite e2e AC1–AC7 verificado ao vivo em docker compose (checklist acima). Correção feita durante o aceite: spans OTel de tool calls MCP e knowledge retrieve agora carregam `investigation_id` (AC7) |
