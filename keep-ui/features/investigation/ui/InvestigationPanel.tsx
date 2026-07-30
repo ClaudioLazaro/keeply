@@ -2,7 +2,13 @@
 
 import { Disclosure } from "@headlessui/react";
 import { Badge, Callout, Card } from "@tremor/react";
-import { IoChevronDown } from "react-icons/io5";
+import {
+  IoChevronDown,
+  IoThumbsDown,
+  IoThumbsDownOutline,
+  IoThumbsUp,
+  IoThumbsUpOutline,
+} from "react-icons/io5";
 import clsx from "clsx";
 import { MarkdownHTML } from "@/shared/ui/MarkdownHTML/MarkdownHTML";
 import {
@@ -14,9 +20,12 @@ import {
 import {
   Investigation,
   InvestigationEvidence,
+  InvestigationFeedbackRating,
   InvestigationHypothesis,
   InvestigationStatus,
 } from "@/entities/investigation/model/types";
+import { useInvestigationFeedback } from "@/entities/investigation/model/useInvestigationFeedback";
+import { useInvestigationFeedbackActions } from "@/entities/investigation/model/useInvestigationActions";
 
 export interface InvestigationPanelProps {
   incidentId: string;
@@ -98,6 +107,77 @@ function HypothesisList({
   );
 }
 
+function FeedbackRatingButton({
+  rating,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  rating: InvestigationFeedbackRating;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: (rating: InvestigationFeedbackRating) => void;
+}) {
+  const Icon =
+    rating === "useful"
+      ? selected
+        ? IoThumbsUp
+        : IoThumbsUpOutline
+      : selected
+        ? IoThumbsDown
+        : IoThumbsDownOutline;
+  return (
+    <button
+      type="button"
+      aria-label={rating === "useful" ? "Useful" : "Not useful"}
+      aria-pressed={selected}
+      disabled={disabled}
+      onClick={() => onSelect(rating)}
+      className={clsx(
+        "p-1.5 rounded-tremor-default border transition-colors disabled:opacity-50",
+        selected
+          ? rating === "useful"
+            ? "text-emerald-600 border-emerald-600 bg-emerald-50"
+            : "text-red-600 border-red-600 bg-red-50"
+          : "text-tremor-content border-tremor-border hover:text-tremor-content-emphasis"
+      )}
+    >
+      <Icon className="size-5" />
+    </button>
+  );
+}
+
+function InvestigationFeedbackSection({
+  investigation,
+}: {
+  investigation: Investigation;
+}) {
+  const { feedback } = useInvestigationFeedback(investigation.id);
+  const { submitFeedback, isSubmitting } = useInvestigationFeedbackActions();
+
+  return (
+    <section>
+      <h5 className="text-tremor-content text-sm font-medium mb-1">
+        Was this investigation useful?
+      </h5>
+      <div className="flex items-center gap-2">
+        <FeedbackRatingButton
+          rating="useful"
+          selected={feedback?.rating === "useful"}
+          disabled={isSubmitting}
+          onSelect={(rating) => submitFeedback(investigation.id, rating)}
+        />
+        <FeedbackRatingButton
+          rating="not_useful"
+          selected={feedback?.rating === "not_useful"}
+          disabled={isSubmitting}
+          onSelect={(rating) => submitFeedback(investigation.id, rating)}
+        />
+      </div>
+    </section>
+  );
+}
+
 function InvestigationPanelBody({
   investigation,
 }: {
@@ -163,6 +243,10 @@ function InvestigationPanelBody({
             <MarkdownHTML>{investigation.rca_draft}</MarkdownHTML>
           </div>
         </section>
+      )}
+
+      {investigation.status === "rca_ready" && (
+        <InvestigationFeedbackSection investigation={investigation} />
       )}
     </div>
   );

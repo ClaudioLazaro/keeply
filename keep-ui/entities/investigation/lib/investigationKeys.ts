@@ -8,6 +8,8 @@ export const investigationKeys = {
     [investigationKeys.all, "evidence", investigationId].join("::"),
   hypotheses: (investigationId: string) =>
     [investigationKeys.all, "hypotheses", investigationId].join("::"),
+  feedback: (investigationId: string) =>
+    [investigationKeys.all, "feedback", investigationId].join("::"),
   getByIncidentMatcher: () => (key: unknown) =>
     typeof key === "string" &&
     key.startsWith([investigationKeys.all, "by-incident"].join("::")),

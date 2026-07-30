@@ -1,5 +1,5 @@
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { InvestigationPanel } from "../InvestigationPanel";
 import {
   INVESTIGATION_POLL_INTERVAL_MS,
@@ -8,15 +8,26 @@ import {
 import {
   Investigation,
   InvestigationEvidence,
+  InvestigationFeedback,
   InvestigationHypothesis,
 } from "@/entities/investigation/model/types";
 
 const mockUseSWR = jest.fn();
+const mockMutate = jest.fn();
 
 jest.mock("swr", () => ({
   __esModule: true,
   default: (key: string | null, fetcher: unknown, config: unknown) =>
     mockUseSWR(key, fetcher, config),
+  useSWRConfig: () => ({ mutate: mockMutate }),
+}));
+
+const mockShowSuccessToast = jest.fn();
+const mockShowErrorToast = jest.fn();
+
+jest.mock("@/shared/ui", () => ({
+  showSuccessToast: (...args: unknown[]) => mockShowSuccessToast(...args),
+  showErrorToast: (...args: unknown[]) => mockShowErrorToast(...args),
 }));
 
 // react-markdown is ESM-only and not transformed by jest; the rendering of
@@ -81,8 +92,19 @@ const hypothesisItems: InvestigationHypothesis[] = [
   },
 ];
 
+const usefulFeedback: InvestigationFeedback = {
+  id: "fb-1",
+  investigation_id: "inv-1",
+  tenant_id: "tenant-1",
+  rating: "useful",
+  comment: null,
+  created_at: "2026-07-29T10:05:00Z",
+  updated_at: "2026-07-29T10:05:00Z",
+};
+
 let byIncidentData: Investigation[] = [];
 let byIncidentError: unknown = undefined;
+let feedbackData: InvestigationFeedback | undefined = undefined;
 
 function swrResultForKey(key: string | null) {
   if (!key) {
@@ -96,6 +118,9 @@ function swrResultForKey(key: string | null) {
   }
   if (key.includes("::hypotheses::")) {
     return { data: hypothesisItems, error: undefined, isLoading: false };
+  }
+  if (key.includes("::feedback::")) {
+    return { data: feedbackData, error: undefined, isLoading: false };
   }
   throw new Error(`Unexpected SWR key: ${key}`);
 }
@@ -116,6 +141,7 @@ describe("InvestigationPanel", () => {
     mockUseSWR.mockImplementation(swrResultForKey);
     byIncidentData = [rcaReadyInvestigation];
     byIncidentError = undefined;
+    feedbackData = undefined;
   });
 
   it("is collapsed by default and expands on click", () => {
@@ -213,6 +239,94 @@ describe("InvestigationPanel", () => {
     for (const [, , config] of swrCallsFor("::hypotheses::")) {
       expect(config?.refreshInterval).toBe(0);
     }
+  });
+});
+
+describe("InvestigationPanel feedback", () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    mockUseSWR.mockReset();
+    mockUseSWR.mockImplementation(swrResultForKey);
+    mockMutate.mockReset();
+    mockShowSuccessToast.mockReset();
+    mockShowErrorToast.mockReset();
+    byIncidentData = [rcaReadyInvestigation];
+    byIncidentError = undefined;
+    feedbackData = undefined;
+    global.fetch = jest.fn();
+  });
+
+  afterAll(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("renders the rating buttons when the investigation is rca_ready", () => {
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expandPanel();
+
+    expect(
+      screen.getByText("Was this investigation useful?")
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Useful" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Not useful" })
+    ).toBeInTheDocument();
+  });
+
+  it("posts the feedback when a rating button is clicked", async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => usefulFeedback,
+    });
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expandPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Useful" }));
+
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+    expect(global.fetch).toHaveBeenCalledWith(
+      "/api/aiops/investigations/inv-1/feedback",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ rating: "useful", comment: null }),
+      })
+    );
+    await waitFor(() =>
+      expect(mockMutate).toHaveBeenCalledWith(
+        "investigations::feedback::inv-1",
+        usefulFeedback,
+        { revalidate: false }
+      )
+    );
+    expect(mockShowSuccessToast).toHaveBeenCalled();
+  });
+
+  it("reflects the existing feedback as the selected rating", () => {
+    feedbackData = usefulFeedback;
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expandPanel();
+
+    expect(screen.getByRole("button", { name: "Useful" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(
+      screen.getByRole("button", { name: "Not useful" })
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("does not render the feedback section while the investigation is in flight", () => {
+    byIncidentData = [gatheringInvestigation];
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expandPanel();
+
+    expect(
+      screen.queryByText("Was this investigation useful?")
+    ).not.toBeInTheDocument();
   });
 });
 

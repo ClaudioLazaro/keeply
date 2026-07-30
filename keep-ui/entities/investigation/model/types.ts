@@ -27,6 +27,18 @@ export interface InvestigationEvidence {
   created_at: string;
 }
 
+export type InvestigationFeedbackRating = "useful" | "not_useful";
+
+export interface InvestigationFeedback {
+  id: string;
+  investigation_id: string;
+  tenant_id: string;
+  rating: InvestigationFeedbackRating;
+  comment: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface InvestigationHypothesis {
   id: string;
   investigation_id?: string;

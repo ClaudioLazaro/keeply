@@ -43,3 +43,42 @@ export async function GET(
     );
   }
 }
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ path: string[] }> }
+) {
+  const { path } = await params;
+
+  const upstreamUrl = new URL(
+    `${AIOPS_API_URL.replace(/\/$/, "")}/v1/${path.map(encodeURIComponent).join("/")}`
+  );
+
+  try {
+    const upstreamResponse = await fetch(upstreamUrl.toString(), {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-API-KEY": AIOPS_API_KEY,
+      },
+      body: await request.text(),
+      cache: "no-store",
+    });
+
+    const body = await upstreamResponse.text();
+    return new NextResponse(body, {
+      status: upstreamResponse.status,
+      headers: {
+        "Content-Type":
+          upstreamResponse.headers.get("Content-Type") ?? "application/json",
+      },
+    });
+  } catch (error) {
+    console.error("aiops proxy: upstream request failed", error);
+    return NextResponse.json(
+      { detail: "aiops-api is unreachable" },
+      { status: 502 }
+    );
+  }
+}
