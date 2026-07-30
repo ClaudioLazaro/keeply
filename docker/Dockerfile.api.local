@@ -1,0 +1,10 @@
+# Local-source keep-api image: published base (identical version 0.54.2) + local
+# keep/ source overlaid onto site-packages. Used when the full source build
+# (docker/Dockerfile.api) cannot reach the Alpine CDN from restricted networks.
+FROM us-central1-docker.pkg.dev/keephq/keep/keep-api:latest
+
+USER root
+COPY keep /venv/lib/python3.13/site-packages/keep
+COPY ee /venv/lib/python3.13/site-packages/keep/ee
+RUN chown -R keep:keep /venv/lib/python3.13/site-packages/keep
+USER keep

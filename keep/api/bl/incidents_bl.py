@@ -30,6 +30,12 @@ from keep.api.core.db import (
     update_incident_from_dto_by_id,
     update_incident_severity,
 )
+from keep.api.core.domain_events import (
+    INCIDENT_CREATED,
+    INCIDENT_RESOLVED,
+    INCIDENT_UPDATED,
+    emit_incident_event,
+)
 from keep.api.core.elastic import ElasticClient
 from keep.api.core.incidents import get_last_incidents_by_cel
 from keep.api.models.action_type import ActionType
@@ -96,6 +102,9 @@ class IncidentBl:
             incident_dto,
             generated_from_ai=generated_from_ai,
             session=self.session,
+        )
+        emit_incident_event(
+            self.session, self.tenant_id, incident, INCIDENT_CREATED
         )
         self.logger.info(
             "Incident created",
@@ -314,6 +323,10 @@ class IncidentBl:
         incident = update_incident_from_dto_by_id(
             self.tenant_id, incident_id, updated_incident_dto, generated_by_ai
         )
+        if incident is not None:
+            emit_incident_event(
+                self.session, self.tenant_id, incident, INCIDENT_UPDATED
+            )
         return self.__postprocess_incident_change(incident)
 
     def __postprocess_alerts_change(self, incident, alert_fingerprints):
@@ -460,6 +473,9 @@ class IncidentBl:
                     incident.status = IncidentStatus.RESOLVED.value
                     self.session.add(incident)
                     self.session.commit()
+                    emit_incident_event(
+                        self.session, self.tenant_id, incident, INCIDENT_RESOLVED
+                    )
                     if handle_workflow_event:
                         self.send_workflow_event(
                             IncidentDto.from_db_incident(incident), "updated"

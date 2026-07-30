@@ -13,6 +13,7 @@ from keep.api.models.db.action import *
 from keep.api.models.db.ai_suggestion import *
 from keep.api.models.db.alert import *
 from keep.api.models.db.dashboard import *
+from keep.api.models.db.domain_event import *
 from keep.api.models.db.extraction import *
 from keep.api.models.db.facet import *
 from keep.api.models.db.maintenance_window import *

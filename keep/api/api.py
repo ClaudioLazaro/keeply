@@ -29,6 +29,10 @@ from keep.api.tasks import process_watcher_task
 import keep.api.utils.import_ee
 from keep.api.core.config import config
 from keep.api.core.db import dispose_session
+from keep.api.core.domain_events import (
+    async_domain_events_dispatcher,
+    is_domain_events_enabled,
+)
 from keep.api.core.dependencies import SINGLE_TENANT_UUID
 from keep.api.core.limiter import limiter
 from keep.api.logging import CONFIG as logging_config
@@ -187,6 +191,14 @@ async def startup():
                     "task": "task",
                 },
             )
+    # Start the domain events dispatcher (ADR-0004 outbox -> webhook bridge)
+    if is_domain_events_enabled():
+        try:
+            logger.info("Starting the domain events dispatcher")
+            asyncio.create_task(async_domain_events_dispatcher())
+            logger.info("Domain events dispatcher started successfully")
+        except Exception:
+            logger.exception("Failed to start the domain events dispatcher")
     logger.info("Services started successfully")
 
 
