@@ -1,0 +1,80 @@
+{
+  "id": "elevated-5xx",
+  "description": "api-gateway returning elevated 5xx (502/504) because upstream payment-api times out; Prometheus HighErrorRate alert firing.",
+  "incident": {
+    "id": "inc-5xx-0002",
+    "name": "Elevated 5xx rate on api-gateway",
+    "severity": "critical",
+    "status": "firing",
+    "service": "api-gateway",
+    "environment": "production"
+  },
+  "stub_evidence": [
+    {
+      "tool": "prom_alerts",
+      "payload": {
+        "backend": "stub",
+        "alerts": [
+          {
+            "name": "HighErrorRate",
+            "severity": "critical",
+            "service": "api-gateway",
+            "summary": "5xx rate above 5% for 10m on api-gateway",
+            "value": "0.083"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "prom_query",
+      "payload": {
+        "backend": "stub",
+        "query": "sum(rate(http_requests_total{service=\"api-gateway\",status=~\"5..\"}[5m]))",
+        "value": 12.4,
+        "unit": "req/s"
+      }
+    },
+    {
+      "tool": "get_logs",
+      "payload": {
+        "backend": "stub",
+        "pod": "api-gateway-6b8c7d9f4-q1zrt",
+        "namespace": "payments",
+        "lines": [
+          "2026-07-29T11:02:14Z ERROR [api-gateway] upstream payment-api:8080 timeout after 5000ms (request_id=9f31c2)",
+          "2026-07-29T11:02:15Z WARN  [api-gateway] returning 504 to client (upstream=payment-api)",
+          "2026-07-29T11:02:31Z ERROR [api-gateway] upstream payment-api:8080 connect refused, 502 sent"
+        ]
+      }
+    },
+    {
+      "tool": "get_events",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "events": [
+          {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "object": "pod/payment-api-7d9f4b6c5-x2vkm",
+            "message": "Readiness probe failed: Get http://10.244.1.37:8080/ready: context deadline exceeded",
+            "count": 8
+          }
+        ]
+      }
+    }
+  ],
+  "stub_knowledge": [
+    {
+      "title": "Runbook: Elevated 5xx on api-gateway",
+      "chunk": "Elevated 5xx on api-gateway is almost always an upstream problem. Check upstream service health (payment-api readiness), upstream timeouts in gateway logs (504 = timeout, 502 = connect refused/reset), and the upstream's own alerts before touching the gateway. Correlating the 5xx spike window with upstream deploys or restarts usually identifies the cause."
+    },
+    {
+      "title": "Runbook: HighErrorRate Prometheus alert",
+      "chunk": "HighErrorRate fires when the 5xx ratio exceeds 5% for 10 minutes. Triage: (1) identify which upstream fails via gateway logs, (2) check upstream pods and events, (3) verify whether a recent deploy correlates with the spike."
+    }
+  ],
+  "expected_keywords": ["5xx", "timeout", "upstream", "payment-api"],
+  "expected_min_citations": 2,
+  "useful_rubric_notes": "Useful when the draft attributes the 5xx spike to the failing upstream (payment-api) rather than the gateway itself, with citations."
+}

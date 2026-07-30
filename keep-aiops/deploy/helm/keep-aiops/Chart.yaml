@@ -1,0 +1,16 @@
+apiVersion: v2
+name: keep-aiops
+description: >-
+  AIOps control plane for Keep (aiops-api orchestrator + mcp-gateway),
+  deployed beside Keep in its own namespace. Keep itself deploys separately.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - keep
+  - aiops
+dependencies:
+  - name: postgresql
+    version: "16.7.27"
+    repository: oci://registry-1.docker.io/bitnamicharts
+    condition: postgresql.enabled

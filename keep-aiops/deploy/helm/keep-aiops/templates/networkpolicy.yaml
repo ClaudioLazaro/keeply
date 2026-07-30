@@ -1,0 +1,113 @@
+{{- if .Values.networkPolicy.enabled }}
+# aiops-api: ingress only from the Keep namespaces (keep-backend webhook
+# outbox, keep-ui proxy); egress to DNS, keep-api, mcp-gateway, Postgres and
+# the OTLP collector port range.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "keep-aiops.apiName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.apiSelectorLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "keep-aiops.apiSelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- toYaml .Values.networkPolicy.allowFromNamespaces | nindent 18 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # DNS (kube-dns / coredns)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # orchestrator -> keep-api (deployment.mdx)
+    - to:
+        - namespaceSelector:
+            matchExpressions:
+              - key: kubernetes.io/metadata.name
+                operator: In
+                values:
+                  {{- toYaml .Values.networkPolicy.allowFromNamespaces | nindent 18 }}
+      ports:
+        - protocol: TCP
+          port: 8080
+    # orchestrator -> mcp-gateway (same namespace)
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8090
+    # Postgres (bundled subchart or external/managed; port-scoped, any peer)
+    - ports:
+        - protocol: TCP
+          port: 5432
+    # OTLP collector (gRPC/HTTP); harmless when otel endpoint is unset
+    - ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+---
+# mcp-gateway: ingress ONLY from aiops-api (agents reach tools through the
+# gateway; nothing else talks to it). Egress: DNS + the Kubernetes API
+# (443/6443) for MCP_K8S_MODE=live in-cluster reads.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "keep-aiops.gatewayName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "keep-aiops.apiSelectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: 8090
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API server (in-cluster config picks the host up from the
+    # KUBERNETES_SERVICE_HOST env, so the peer cannot be selector-scoped).
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+{{- end }}

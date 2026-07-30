@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "keep-aiops.gatewayName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.mcpGateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keep-aiops.labels" . | nindent 8 }}
+        {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "keep-aiops.gatewayServiceAccountName" . }}
+      containers:
+        - name: mcp-gateway
+          image: {{ include "keep-aiops.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8090"]
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: MCP_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: MCP_K8S_MODE
+              value: {{ .Values.mcpGateway.k8sMode | quote }}
+            {{- if .Values.mcpGateway.auditLogPath }}
+            - name: MCP_AUDIT_LOG_PATH
+              value: {{ .Values.mcpGateway.auditLogPath | quote }}
+            {{- end }}
+            - name: MCP_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.mcpGateway.otel.exporterOtlpEndpoint | quote }}
+            - name: MCP_OTEL_CONSOLE_EXPORT
+              value: {{ .Values.mcpGateway.otel.consoleExport | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.mcpGateway.resources | nindent 12 }}

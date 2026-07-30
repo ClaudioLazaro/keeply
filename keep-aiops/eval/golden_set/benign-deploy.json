@@ -1,0 +1,103 @@
+{
+  "id": "benign-deploy",
+  "description": "Incident auto-created during a routine payment-api rollout; brief readiness blip while old pods drained, new pods healthy. No customer impact.",
+  "incident": {
+    "id": "inc-dep-0005",
+    "name": "payment-api readiness probe failures",
+    "severity": "high",
+    "status": "firing",
+    "service": "payment-api",
+    "environment": "production"
+  },
+  "stub_evidence": [
+    {
+      "tool": "get_events",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "events": [
+          {
+            "type": "Normal",
+            "reason": "ScalingReplicaSet",
+            "object": "deployment/payment-api",
+            "message": "Scaled up replica set payment-api-8e0f1a2b3 to 3",
+            "count": 1
+          },
+          {
+            "type": "Normal",
+            "reason": "ScalingReplicaSet",
+            "object": "deployment/payment-api",
+            "message": "Scaled down replica set payment-api-7d9f4b6c5 to 0",
+            "count": 1
+          },
+          {
+            "type": "Warning",
+            "reason": "Unhealthy",
+            "object": "pod/payment-api-7d9f4b6c5-x2vkm",
+            "message": "Readiness probe failed: Get http://10.244.1.37:8080/ready: connect: connection refused",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_pods",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "pods": [
+          {
+            "name": "payment-api-8e0f1a2b3-a1bcd",
+            "namespace": "payments",
+            "phase": "Running",
+            "ready": true,
+            "restarts": 0,
+            "container": "payment-api",
+            "node": "kind-worker",
+            "age": "6m",
+            "state": {"running": {"started_at": "2026-07-29T14:02:11Z"}},
+            "last_terminated": null
+          },
+          {
+            "name": "payment-api-8e0f1a2b3-e2fgh",
+            "namespace": "payments",
+            "phase": "Running",
+            "ready": true,
+            "restarts": 0,
+            "container": "payment-api",
+            "node": "kind-worker2",
+            "age": "6m",
+            "state": {"running": {"started_at": "2026-07-29T14:02:14Z"}},
+            "last_terminated": null
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_logs",
+      "payload": {
+        "backend": "stub",
+        "pod": "payment-api-8e0f1a2b3-a1bcd",
+        "namespace": "payments",
+        "lines": [
+          "2026-07-29T14:02:12Z INFO  [payment-api] Starting PaymentApiApplication v2.15.0 (pid 1)",
+          "2026-07-29T14:02:19Z INFO  [payment-api] Bootstrapped connectors: postgres=ok redis=ok kafka=ok",
+          "2026-07-29T14:02:20Z INFO  [payment-api] Started PaymentApiApplication in 7.812 seconds; readiness probe passing"
+        ]
+      }
+    }
+  ],
+  "stub_knowledge": [
+    {
+      "title": "Runbook: Readiness probe failures during deploys",
+      "chunk": "Transient readiness probe failures during a rolling update are expected while old pods drain and new pods warm up. Correlate the failure window with ScalingReplicaSet events and deployment rollout history; if new pods are Running and Ready with clean logs, the incident is benign and deploy-related. Escalate only if probe failures persist after the rollout completes."
+    },
+    {
+      "title": "Runbook: Distinguishing benign deploys from regressions",
+      "chunk": "A deploy-related blip shows: Normal ScalingReplicaSet events, new ReplicaSet pods healthy, no error logs on new pods, and no correlated alerts on dependencies. A regression shows persistent 5xx, crash loops, or dependency alerts after the rollout. When in doubt, a human should compare error rates before and after the deploy."
+    }
+  ],
+  "expected_keywords": ["deploy", "rollout", "readiness", "benign"],
+  "expected_min_citations": 2,
+  "useful_rubric_notes": "Useful when the draft recognizes the rollout correlation and concludes likely-benign rather than inventing a fault, with citations."
+}

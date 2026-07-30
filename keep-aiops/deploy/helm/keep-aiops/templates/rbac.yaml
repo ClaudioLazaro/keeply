@@ -1,0 +1,30 @@
+{{- if and .Values.mcpGateway.serviceAccount.create .Values.mcpGateway.rbac.create }}
+# Namespaced read role for MCP_K8S_MODE=live. Covers the release namespace
+# only — use a ClusterRole (see values.yaml mcpGateway.rbac docs) when the
+# gateway must read workloads in other namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "keep-aiops.gatewayName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 4 }}
+rules:
+  {{- toYaml .Values.mcpGateway.rbac.rules | nindent 2 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "keep-aiops.gatewayName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "keep-aiops.gatewayName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "keep-aiops.gatewayServiceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

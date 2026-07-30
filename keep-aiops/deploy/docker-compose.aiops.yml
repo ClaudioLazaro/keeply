@@ -1,0 +1,83 @@
+# keep-aiops M0 spike — AI control plane beside Keep.
+# Usage (from repo root):
+#   docker compose -f docker-compose.yml -f keep-aiops/deploy/docker-compose.aiops.yml up --build
+# Vanilla `docker compose up` (without this file) MUST keep working unchanged.
+services:
+  # Thin env merge onto the vanilla Keep backend: enables the domain-event
+  # outbox/webhook spike (ADR-0004). Without this file, Keep runs unchanged.
+  keep-backend:
+    # Local-source image (outbox spike). Build per deploy/RUNBOOK.md; falls back
+    # to the published image if you remove this line.
+    image: keep-api:m0
+    volumes:
+      # Named volume: avoids host ./state permission issues (container uid 1000)
+      - keep-state:/state
+    environment:
+      - KEEP_DOMAIN_EVENTS_ENABLED=true
+      - KEEP_DOMAIN_EVENTS_WEBHOOK_URL=http://aiops-api:8080/v1/events/keep
+      - KEEP_DOMAIN_EVENTS_WEBHOOK_SECRET=${KEEP_DOMAIN_EVENTS_WEBHOOK_SECRET:-dev-webhook-secret}
+
+  aiops-api:
+    image: keep-aiops:dev
+    build:
+      context: ./keep-aiops
+    command: uvicorn aiops_api.main:app --host 0.0.0.0 --port 8080
+    ports:
+      - "8081:8080"
+    environment:
+      - AIOPS_ENVIRONMENT=dev
+      - AIOPS_KEEP_API_URL=http://keep-backend:8080
+      - AIOPS_KEEP_API_KEY=${KEEP_API_KEY:-dev-key} # NO_AUTH dev default
+      - AIOPS_WEBHOOK_SECRET=${KEEP_DOMAIN_EVENTS_WEBHOOK_SECRET:-dev-webhook-secret}
+      - AIOPS_MCP_GATEWAY_URL=http://mcp-gateway:8090
+      - AIOPS_DATABASE_URL=postgresql+psycopg://aiops:aiops@postgres:5432/aiops
+      - AIOPS_AUTO_CREATE_TABLES=false # schema owned by alembic (aiops-migrate)
+      - AIOPS_OTEL_CONSOLE_EXPORT=true
+      - AIOPS_OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      aiops-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # One-shot schema migrator: runs to completion before aiops-api starts.
+  aiops-migrate:
+    image: keep-aiops:dev
+    build:
+      context: ./keep-aiops
+    command: alembic -c alembic.ini upgrade head
+    environment:
+      - AIOPS_DATABASE_URL=postgresql+psycopg://aiops:aiops@postgres:5432/aiops
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=aiops
+      - POSTGRES_PASSWORD=aiops
+      - POSTGRES_DB=aiops
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiops -d aiops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - aiops-postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  mcp-gateway:
+    image: keep-aiops:dev
+    build:
+      context: ./keep-aiops
+    command: uvicorn mcp_gateway.main:app --host 0.0.0.0 --port 8090
+    ports:
+      - "8090:8090"
+    environment:
+      - MCP_K8S_MODE=${MCP_K8S_MODE:-stub} # 'live' requires a mounted kubeconfig / in-cluster config
+    restart: unless-stopped
+
+volumes:
+  aiops-postgres-data:
+  keep-state:

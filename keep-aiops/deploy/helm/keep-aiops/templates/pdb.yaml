@@ -1,0 +1,29 @@
+{{- if .Values.aiopsApi.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "keep-aiops.apiName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.apiSelectorLabels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.aiopsApi.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "keep-aiops.apiSelectorLabels" . | nindent 6 }}
+{{- end }}
+---
+{{- if .Values.mcpGateway.pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "keep-aiops.gatewayName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.mcpGateway.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "keep-aiops.gatewaySelectorLabels" . | nindent 6 }}
+{{- end }}

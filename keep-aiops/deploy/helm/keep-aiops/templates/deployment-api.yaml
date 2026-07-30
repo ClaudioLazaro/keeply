@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "keep-aiops.apiName" . }}
+  labels:
+    {{- include "keep-aiops.labels" . | nindent 4 }}
+    {{- include "keep-aiops.apiSelectorLabels" . | nindent 4 }}
+spec:
+  {{- if not .Values.aiopsApi.autoscaling.enabled }}
+  replicas: {{ .Values.aiopsApi.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "keep-aiops.apiSelectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "keep-aiops.labels" . | nindent 8 }}
+        {{- include "keep-aiops.apiSelectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: aiops-api
+          image: {{ include "keep-aiops.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "aiops_api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: AIOPS_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: AIOPS_KEEP_API_URL
+              value: {{ .Values.aiopsApi.keepApiUrl | quote }}
+            {{- if .Values.aiopsApi.keepApiKey.existingSecret }}
+            - name: AIOPS_KEEP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aiopsApi.keepApiKey.existingSecret }}
+                  key: {{ .Values.aiopsApi.keepApiKey.existingSecretKey }}
+            {{- else }}
+            - name: AIOPS_KEEP_API_KEY
+              value: {{ .Values.aiopsApi.keepApiKey.value | quote }}
+            {{- end }}
+            {{- if .Values.aiopsApi.webhookSecret.existingSecret }}
+            - name: AIOPS_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aiopsApi.webhookSecret.existingSecret }}
+                  key: {{ .Values.aiopsApi.webhookSecret.existingSecretKey }}
+            {{- else }}
+            - name: AIOPS_WEBHOOK_SECRET
+              value: {{ .Values.aiopsApi.webhookSecret.value | quote }}
+            {{- end }}
+            - name: AIOPS_MCP_GATEWAY_URL
+              value: "http://{{ include "keep-aiops.gatewayName" . }}:8090"
+            {{- include "keep-aiops.databaseEnv" . | nindent 12 }}
+            - name: AIOPS_AUTO_CREATE_TABLES
+              value: {{ .Values.database.autoCreateTables | quote }}
+            - name: AIOPS_OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.aiopsApi.otel.exporterOtlpEndpoint | quote }}
+            - name: AIOPS_OTEL_CONSOLE_EXPORT
+              value: {{ .Values.aiopsApi.otel.consoleExport | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.aiopsApi.resources | nindent 12 }}

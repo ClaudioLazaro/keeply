@@ -1,0 +1,93 @@
+{
+  "id": "oom-crashloop",
+  "description": "payment-api pod in CrashLoopBackOff after OOMKilled (exit 137) during settlement batch load; JVM heap exhausted. Classic memory-limit incident.",
+  "incident": {
+    "id": "inc-oom-0001",
+    "name": "payment-api pods crashlooping in payments namespace",
+    "severity": "critical",
+    "status": "firing",
+    "service": "payment-api",
+    "environment": "production"
+  },
+  "stub_evidence": [
+    {
+      "tool": "get_pods",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "pods": [
+          {
+            "name": "payment-api-7d9f4b6c5-x2vkm",
+            "namespace": "payments",
+            "phase": "Running",
+            "ready": false,
+            "restarts": 14,
+            "container": "payment-api",
+            "node": "kind-worker2",
+            "state": {
+              "waiting": {
+                "reason": "CrashLoopBackOff",
+                "message": "back-off 5m0s restarting failed container=payment-api pod=payment-api-7d9f4b6c5-x2vkm"
+              }
+            },
+            "last_terminated": {"reason": "OOMKilled", "exit_code": 137}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_events",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "events": [
+          {
+            "type": "Warning",
+            "reason": "OOMKilling",
+            "object": "node/kind-worker2",
+            "message": "Memory cgroup out of memory: Killed process 18234 (payment-api) total-vm:1845260kB, anon-rss:1048576kB",
+            "count": 3
+          },
+          {
+            "type": "Warning",
+            "reason": "BackOff",
+            "object": "pod/payment-api-7d9f4b6c5-x2vkm",
+            "message": "Back-off restarting failed container payment-api",
+            "count": 12
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_logs",
+      "payload": {
+        "backend": "stub",
+        "pod": "payment-api-7d9f4b6c5-x2vkm",
+        "namespace": "payments",
+        "lines": [
+          "WARN  [settlement] Loaded 412388 settlement rows; heap usage 912Mi/1024Mi",
+          "ERROR [payment-api] Uncaught exception in thread settlement-batch-1",
+          "java.lang.OutOfMemoryError: Java heap space",
+          "ERROR [payment-api] Fatal error, container exiting (reason=OOMKilled, exit_code=137)"
+        ]
+      }
+    }
+  ],
+  "stub_knowledge": [
+    {
+      "title": "Runbook: OOMKilled / CrashLoopBackOff triage",
+      "chunk": "When a pod is OOMKilled (exit code 137) and enters CrashLoopBackOff, compare the container memory limit with actual usage under peak load. For JVM services, check heap settings (-Xmx) against the cgroup limit; heap near the limit (e.g. 912Mi/1024Mi) plus OutOfMemoryError in logs confirms memory pressure. Remediation candidates: raise the memory limit, lower -Xmx, or reduce batch size. Always involve a human before changing limits."
+    },
+    {
+      "title": "Runbook: JVM OutOfMemoryError in payment-api",
+      "chunk": "payment-api loads pending settlements in a 24h window at startup of the batch thread. Large backlogs exhaust the heap. Check logs for 'java.lang.OutOfMemoryError: Java heap space' and the number of settlement rows loaded. Consider paginating the settlement load or temporarily increasing the container memory limit."
+    },
+    {
+      "title": "Postmortem 2026-05: settlement batch OOM",
+      "chunk": "Historical incident: settlement batch OOMKilled after a backlog of ~400k rows. Fixed by chunking the load and raising memory limits from 1Gi to 2Gi. Symptom signature: CrashLoopBackOff, OOMKilled, heap usage near limit."
+    }
+  ],
+  "expected_keywords": ["OOMKilled", "CrashLoopBackOff", "OutOfMemoryError", "memory"],
+  "expected_min_citations": 2,
+  "useful_rubric_notes": "Useful when the draft links OOMKilled/CrashLoopBackOff evidence to heap exhaustion and cites evidence + the OOM runbook."
+}

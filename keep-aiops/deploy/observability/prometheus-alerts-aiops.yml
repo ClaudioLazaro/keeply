@@ -1,0 +1,75 @@
+# Prometheus scrape config snippet for aiops-api — merge into your prometheus.yml
+# (or values.yaml of kube-prometheus-stack). The /metrics endpoint is
+# unauthenticated by design; restrict network access via NetworkPolicy.
+#
+# scrape_configs:
+#   - job_name: aiops-api
+#     scrape_interval: 15s
+#     metrics_path: /metrics
+#     kubernetes_sd_configs:
+#       - role: pod
+#         namespaces:
+#           names: [keep]
+#     relabel_configs:
+#       - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_component]
+#         regex: aiops-api
+#         action: keep
+#       - source_labels: [__meta_kubernetes_pod_ip]
+#         target_label: __address__
+#         replacement: $1:8000
+#
+# Bare-metal / compose fallback:
+#   - job_name: aiops-api
+#     static_configs:
+#       - targets: ["aiops-api:8000"]
+
+groups:
+  - name: aiops-api
+    interval: 30s
+    rules:
+      - alert: AiopsApiDown
+        expr: up{job="aiops-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: aiops
+        annotations:
+          summary: aiops-api is not being scraped
+          description: Prometheus has failed to scrape the aiops-api /metrics endpoint for more than 2 minutes.
+
+      - alert: InvestigationFailureRateHigh
+        expr: |
+          sum(rate(keep_aiops_investigations_failed_total[15m]))
+            / sum(rate(keep_aiops_investigations_started_total[15m])) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+          team: aiops
+        annotations:
+          summary: High investigation failure rate
+          description: More than 20% of started investigations are ending in `failed` over the last 15m ({{ $value | humanizePercentage }}).
+
+      - alert: InvestigationDurationP95Slow
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(keep_aiops_investigation_duration_seconds_bucket[30m])) by (le)
+          ) > 900
+        for: 30m
+        labels:
+          severity: warning
+          team: aiops
+        annotations:
+          summary: Investigation p95 duration above 15 minutes
+          description: p95 investigation duration has exceeded 900s for 30m (current p95 {{ $value | humanizeDuration }}). Check MCP gateway latency and Keep writeback.
+
+      - alert: McpToolErrorsHigh
+        expr: |
+          sum(rate(keep_aiops_mcp_tool_calls_total{outcome="error"}[15m]))
+            / sum(rate(keep_aiops_mcp_tool_calls_total[15m])) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+          team: aiops
+        annotations:
+          summary: High MCP tool call error rate
+          description: More than 20% of MCP gateway tool calls are failing over the last 15m ({{ $value | humanizePercentage }}). Evidence gaps will appear in RCA drafts.

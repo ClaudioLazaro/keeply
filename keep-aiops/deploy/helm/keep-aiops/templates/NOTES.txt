@@ -1,0 +1,25 @@
+keep-aiops {{ .Chart.AppVersion }} installed into namespace {{ .Release.Namespace }}.
+
+Components:
+  aiops-api (orchestrator):   http://{{ include "keep-aiops.apiName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8080
+  mcp-gateway (tool boundary): http://{{ include "keep-aiops.gatewayName" . }}.{{ .Release.Namespace }}.svc.cluster.local:8090
+
+Status:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "keep-aiops.apiName" . }} 8080:8080
+
+Current mode: environment={{ .Values.environment }}, mcp-gateway k8sMode={{ .Values.mcpGateway.k8sMode }} (suggest-only posture; no mutate-class tools are invocable).
+{{- if .Values.migrate.enabled }}
+Schema: managed by the {{ include "keep-aiops.migrateName" . }} pre-install/pre-upgrade hook Job (alembic upgrade head).
+{{- end }}
+{{- if not .Values.networkPolicy.enabled }}
+
+NOTE: NetworkPolicies are DISABLED (networkPolicy.enabled=false). Enable them
+once your CNI enforces NetworkPolicy to get the deployment.mdx isolation.
+{{- end }}
+{{- if .Values.postgresql.enabled }}
+
+NOTE: bundled dev PostgreSQL is enabled with a default password — override
+postgresql.auth.postgresPassword or point database.url / database.existingSecret
+at a managed Postgres before real use.
+{{- end }}

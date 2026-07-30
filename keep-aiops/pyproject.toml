@@ -1,0 +1,45 @@
+[project]
+name = "keep-aiops"
+version = "0.1.0"
+description = "AIOps control plane for Keep (AI-native product evolution) — M0 architecture spike"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "httpx>=0.27",
+    "sqlmodel>=0.0.22",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "opentelemetry-sdk>=1.29",
+    "opentelemetry-instrumentation-fastapi>=0.50b0",
+    "opentelemetry-exporter-otlp-proto-http>=1.29",
+    "prometheus-client>=0.21",
+    "prometheus-fastapi-instrumentator>=7.0",
+    # Multi-model access (ADR-0007). Imported lazily at call sites so the
+    # deterministic no-LLM path never pays the import cost.
+    "litellm>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.25",
+    "respx>=0.21",
+]
+live = [
+    "kubernetes>=29",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["aiops_api", "mcp_gateway", "packages/keep_client"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]

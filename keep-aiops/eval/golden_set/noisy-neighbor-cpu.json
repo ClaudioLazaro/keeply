@@ -1,0 +1,100 @@
+{
+  "id": "noisy-neighbor-cpu",
+  "description": "payment-api latency elevated because a co-located batch pod (report-generator) is consuming node CPU; CPUThrottlingHigh alert firing on the payments namespace.",
+  "incident": {
+    "id": "inc-cpu-0006",
+    "name": "payment-api p99 latency elevated",
+    "severity": "high",
+    "status": "firing",
+    "service": "payment-api",
+    "environment": "production"
+  },
+  "stub_evidence": [
+    {
+      "tool": "prom_alerts",
+      "payload": {
+        "backend": "stub",
+        "alerts": [
+          {
+            "name": "CPUThrottlingHigh",
+            "severity": "high",
+            "service": "payment-api",
+            "summary": "31% CPU throttling on container payment-api in namespace payments",
+            "value": "0.31"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "prom_query",
+      "payload": {
+        "backend": "stub",
+        "query": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"payments\"}[5m]))",
+        "series": [
+          {"pod": "report-generator-9z8y7x6w5-v4tuv", "value": 3.9},
+          {"pod": "payment-api-7d9f4b6c5-x2vkm", "value": 0.4},
+          {"pod": "api-gateway-6b8c7d9f4-q1zrt", "value": 0.2}
+        ],
+        "unit": "cores"
+      }
+    },
+    {
+      "tool": "get_pods",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "pods": [
+          {
+            "name": "report-generator-9z8y7x6w5-v4tuv",
+            "namespace": "payments",
+            "phase": "Running",
+            "ready": true,
+            "restarts": 0,
+            "container": "report-generator",
+            "node": "kind-worker2",
+            "age": "35m",
+            "state": {"running": {"started_at": "2026-07-29T14:41:03Z"}},
+            "last_terminated": null
+          },
+          {
+            "name": "payment-api-7d9f4b6c5-x2vkm",
+            "namespace": "payments",
+            "phase": "Running",
+            "ready": true,
+            "restarts": 0,
+            "container": "payment-api",
+            "node": "kind-worker2",
+            "age": "2d",
+            "state": {"running": {"started_at": "2026-07-27T09:12:44Z"}},
+            "last_terminated": null
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_logs",
+      "payload": {
+        "backend": "stub",
+        "pod": "payment-api-7d9f4b6c5-x2vkm",
+        "namespace": "payments",
+        "lines": [
+          "2026-07-29T15:10:02Z WARN  [payment-api] request latency p99=1840ms exceeds SLO 800ms (window=5m)",
+          "2026-07-29T15:10:03Z INFO  [payment-api] gc pause total=212ms (suspected CPU starvation)"
+        ]
+      }
+    }
+  ],
+  "stub_knowledge": [
+    {
+      "title": "Runbook: CPUThrottlingHigh and noisy neighbors",
+      "chunk": "CPUThrottlingHigh fires when a container is throttled against its CPU limit. Check per-pod CPU usage on the same node: a single pod consuming multiple cores (a noisy neighbor, often a batch/report workload) starves latency-sensitive services sharing the node. Remediation candidates for a human: add CPU requests/limits, move the batch workload, or isolate it on dedicated nodes."
+    },
+    {
+      "title": "Runbook: Latency without errors",
+      "chunk": "When latency rises but error rates stay flat, suspect resource contention rather than application faults: CPU throttling, noisy neighbors, or GC pauses from CPU starvation. Correlate p99 latency windows with node-level CPU saturation before investigating code."
+    }
+  ],
+  "expected_keywords": ["CPU", "throttling", "noisy neighbor", "report-generator"],
+  "expected_min_citations": 2,
+  "useful_rubric_notes": "Useful when the draft names the noisy neighbor (report-generator) as the likely cause of throttling/latency, with citations."
+}

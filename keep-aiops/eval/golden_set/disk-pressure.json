@@ -1,0 +1,89 @@
+{
+  "id": "disk-pressure",
+  "description": "Node kind-worker2 under DiskPressure; settlement-worker pod evicted; image garbage collection failing.",
+  "incident": {
+    "id": "inc-dsk-0004",
+    "name": "Node DiskPressure - pods evicted in payments namespace",
+    "severity": "high",
+    "status": "firing",
+    "service": "settlement-worker",
+    "environment": "production"
+  },
+  "stub_evidence": [
+    {
+      "tool": "get_events",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "events": [
+          {
+            "type": "Warning",
+            "reason": "Evicted",
+            "object": "pod/settlement-worker-5c6f7d8b9-m4pln",
+            "message": "The node was low on resource: ephemeral-storage. Threshold quantity: 3221225472, available: 1830296Ki.",
+            "count": 1
+          },
+          {
+            "type": "Warning",
+            "reason": "DiskPressure",
+            "object": "node/kind-worker2",
+            "message": "Node kind-worker2 status is now: NodeHasDiskPressure",
+            "count": 4
+          },
+          {
+            "type": "Warning",
+            "reason": "ImageGCFailed",
+            "object": "node/kind-worker2",
+            "message": "failed to garbage collect required amount of images. Attempted to free 4123456789 bytes, but only found 0 bytes eligible to free.",
+            "count": 6
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_pods",
+      "payload": {
+        "backend": "stub",
+        "namespace": "payments",
+        "pods": [
+          {
+            "name": "settlement-worker-5c6f7d8b9-m4pln",
+            "namespace": "payments",
+            "phase": "Failed",
+            "ready": false,
+            "restarts": 0,
+            "container": "settlement-worker",
+            "node": "kind-worker2",
+            "state": {"terminated": {"reason": "Evicted", "exit_code": 1}},
+            "last_terminated": {"reason": "Evicted", "exit_code": 1}
+          }
+        ]
+      }
+    },
+    {
+      "tool": "get_logs",
+      "payload": {
+        "backend": "stub",
+        "pod": "settlement-worker-5c6f7d8b9-m4pln",
+        "namespace": "payments",
+        "lines": [
+          "2026-07-29T13:12:55Z ERROR [settlement-worker] failed to write checkpoint file /data/checkpoints/batch-9912.chk: no space left on device",
+          "2026-07-29T13:12:56Z ERROR [settlement-worker] unrecoverable IO error, shutting down"
+        ]
+      }
+    }
+  ],
+  "stub_knowledge": [
+    {
+      "title": "Runbook: Node DiskPressure and pod evictions",
+      "chunk": "When a node reports DiskPressure, the kubelet evicts pods to reclaim ephemeral storage. Check eviction events ('The node was low on resource: ephemeral-storage'), container logs for 'no space left on device', and node disk usage (images, container logs, emptyDir volumes). Remediation candidates for a human: free disk space, tune image-gc thresholds, or add ephemeral-storage requests/limits so eviction is fair."
+    },
+    {
+      "title": "Runbook: ImageGCFailed",
+      "chunk": "ImageGCFailed means the kubelet could not free enough disk by removing unused images — usually because most disk is consumed by container writable layers or logs, not images. Inspect the node's largest consumers before adding capacity."
+    }
+  ],
+  "expected_keywords": ["DiskPressure", "Evicted", "ephemeral-storage", "disk"],
+  "expected_min_citations": 2,
+  "useful_rubric_notes": "Useful when the draft ties pod eviction to node DiskPressure and cites the eviction event plus the disk runbook."
+}

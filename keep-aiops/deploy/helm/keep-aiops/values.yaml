@@ -1,0 +1,204 @@
+# Default values for keep-aiops.
+#
+# The chart deploys the AIOps control plane NEXT TO Keep (which installs
+# separately, typically into the `keep` namespace). Suggested install:
+#   kubectl create namespace keep-aiops
+#   helm install keep-aiops ./keep-aiops/deploy/helm/keep-aiops -n keep-aiops
+
+# -- Image shared by aiops-api, mcp-gateway and the migrate Job.
+image:
+  repository: keep-aiops
+  # -- Defaults to .Chart.AppVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# -- Deployment environment label (AIOPS_ENVIRONMENT / MCP_ENVIRONMENT).
+environment: "dev"
+
+# ---------------------------------------------------------------------------
+# aiops-api (orchestrator / gateway entry, port 8080)
+# ---------------------------------------------------------------------------
+aiopsApi:
+  replicaCount: 1
+
+  # -- Base URL of the Keep API (orchestrator -> keep-api is the only allowed
+  # north-south call; see docs/aiops/architecture/deployment.mdx).
+  keepApiUrl: "http://keep-backend.keep.svc.cluster.local:8080"
+
+  # Keep API key (read:incident / write:incident scopes). Prefer an existing
+  # Secret in prod; the plaintext value is a dev convenience only.
+  keepApiKey:
+    value: "dev-key"
+    existingSecret: ""
+    existingSecretKey: "keep-api-key"
+
+  # HMAC secret shared with the Keep outbox webhook dispatcher
+  # (KEEP_DOMAIN_EVENTS_WEBHOOK_SECRET on the Keep side).
+  webhookSecret:
+    value: "dev-webhook-secret"
+    existingSecret: ""
+    existingSecretKey: "webhook-secret"
+
+  otel:
+    # -- OTLP collector endpoint; empty disables export (spans still created).
+    exporterOtlpEndpoint: ""
+    consoleExport: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # HorizontalPodAutoscaler for aiops-api (HPA on orchestrator per
+  # deployment.mdx). Disabled by default; enable for production.
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 80
+
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# mcp-gateway (agent tool boundary, port 8090). Agents reach tools ONLY
+# through this service (ADR-0002).
+# ---------------------------------------------------------------------------
+mcpGateway:
+  replicaCount: 1
+
+  # -- 'stub' (default) returns canned payloads and needs no API access.
+  # 'live' reads the in-cluster Kubernetes API and requires
+  # serviceAccount + rbac.create=true below, plus the image built with the
+  # `live` extra (keep-aiops[live]).
+  k8sMode: "stub"
+
+  # -- Optional JSON-lines audit log file path (audit logger always emits to
+  # stdout regardless).
+  auditLogPath: ""
+
+  otel:
+    exporterOtlpEndpoint: ""
+    consoleExport: false
+
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 250m
+      memory: 256Mi
+
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+  serviceAccount:
+    create: true
+    name: ""
+    annotations: {}
+
+  # Namespaced Role for live K8s reads (MCP_K8S_MODE=live). Disabled by
+  # default because stub mode needs no API access. The default rules cover
+  # exactly what mcp_gateway.tools.k8s calls:
+  #   rules:
+  #     - apiGroups: [""]
+  #       resources: ["pods"]
+  #       verbs: ["get", "list"]          # get_pods
+  #     - apiGroups: [""]
+  #       resources: ["pods/log"]
+  #       verbs: ["get"]                  # get_logs
+  #     - apiGroups: [""]
+  #       resources: ["events"]
+  #       verbs: ["get", "list", "watch"] # get_events
+  # Note: a namespaced Role only covers THIS namespace; reading other
+  # namespaces (the common case — workloads live in `keep` etc.) needs a
+  # ClusterRole instead. Render one by swapping Role/ClusterRole in your own
+  # wrapper chart or post-render step, or extend rbac.rules + template as
+  # needed for your rollout.
+  rbac:
+    create: false
+    rules:
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["get", "list"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+      - apiGroups: [""]
+        resources: ["events"]
+        verbs: ["get", "list", "watch"]
+
+# ---------------------------------------------------------------------------
+# Database. aiops-api is fail-closed on schema: AIOPS_AUTO_CREATE_TABLES is
+# false by default and schema is owned by the aiops-migrate hook Job
+# (alembic upgrade head). Resolution order for AIOPS_DATABASE_URL:
+#   1. database.existingSecret (prod: External Secrets / sealed secrets)
+#   2. database.url (explicit override, e.g. external/managed Postgres)
+#   3. bundled bitnami/postgresql subchart (postgresql.enabled=true, dev)
+# ---------------------------------------------------------------------------
+database:
+  # -- Full SQLAlchemy URL override, e.g.
+  # postgresql+psycopg://aiops:PASSWORD@my-rds.example.com:5432/aiops
+  url: ""
+  # -- Secret holding the full URL (takes precedence over database.url).
+  existingSecret: ""
+  existingSecretKey: "database-url"
+  # -- create_all on startup. Keep false in prod; alembic owns the schema.
+  autoCreateTables: false
+
+# Bundled PostgreSQL for dev/small installs (bitnami subchart).
+# For prod set postgresql.enabled=false and use database.url or
+# database.existingSecret pointing at your managed Postgres.
+postgresql:
+  enabled: true
+  auth:
+    # Dev-only default password; CHANGE for anything shared, or set
+    # auth.existingSecret per bitnami/postgresql docs.
+    postgresPassword: "aiops-dev-password"
+    database: aiops
+  primary:
+    persistence:
+      enabled: true
+      size: 1Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# aiops-migrate Job — runs `alembic upgrade head` as a Helm pre-install /
+# pre-upgrade hook (boring, fail-closed: a failed migration aborts the
+# release before new pods roll). Old hook Jobs are reaped via
+# hook-delete-policy. Disable for sqlite-only local tinkering.
+# NOTE: requires the image to ship the alembic scaffold (alembic.ini +
+# alembic/ at /app). See README.md "Schema migrations".
+# ---------------------------------------------------------------------------
+migrate:
+  enabled: true
+  backoffLimit: 3
+
+# ---------------------------------------------------------------------------
+# NetworkPolicies (disabled by default; enable once your CNI enforces them).
+# Implements deployment.mdx: aiops-api ingress from the Keep namespaces,
+# mcp-gateway ingress only from aiops-api, egress restricted to DNS +
+# keep-api (+ in-cluster dependencies).
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: false
+  # -- Namespaces allowed to reach aiops-api (keep-backend webhook outbox,
+  # keep-ui proxying). Keep itself installs into `keep` by default.
+  allowFromNamespaces:
+    - keep
+  # -- Namespace where kube-dns/coredns runs (for egress DNS rules).
+  dnsNamespace: kube-system
