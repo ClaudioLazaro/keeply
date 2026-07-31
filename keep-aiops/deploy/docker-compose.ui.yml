@@ -1,0 +1,27 @@
+# keep-aiops UI demo — keep-ui built from local source (includes the
+# InvestigationPanel + /api/aiops proxy, not in the published image).
+# Usage (from repo root):
+#   docker compose -f docker-compose.yml \
+#     -f keep-aiops/deploy/docker-compose.aiops.yml \
+#     -f keep-aiops/deploy/docker-compose.ui.yml up -d
+services:
+  keep-frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dev.ui
+    image: keep-ui:dev
+    # Dev server without turbopack: turbopack fails to resolve next/font/google's
+    # virtual module (@vercel/turbopack-next/internal/font/google/font) → 500s.
+    command: npm run dev:webpack
+    volumes:
+      # Corporate proxy root CA so next/font/google can fetch from
+      # fonts.gstatic.com through TLS-intercepting proxies.
+      - /usr/local/share/ca-certificates/proxy-root.crt:/etc/ssl/proxy-root.crt:ro
+    environment:
+      - NODE_EXTRA_CA_CERTS=/etc/ssl/proxy-root.crt
+      # keep-ui dev compile OOMs with node's default heap on small hosts.
+      - NODE_OPTIONS=--max-old-space-size=6144
+      # Server-side only: used by the /api/aiops/* proxy route; never exposed
+      # to the browser.
+      - AIOPS_API_URL=http://aiops-api:8080
+      - AIOPS_API_KEY=${KEEP_API_KEY:-dev-key} # NO_AUTH dev default

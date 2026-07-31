@@ -125,7 +125,30 @@ docker compose -f docker-compose.yml -f keep-aiops/deploy/docker-compose.aiops.y
 Every investigation span carries the `investigation_id` attribute. Point
 `OTEL_EXPORTER_OTLP_ENDPOINT` at a collector for real traces.
 
-## 7. Optional: live K8s evidence with kind
+## 7. Optional: UI with the investigation panel
+
+The published keep-ui image does not include the `InvestigationPanel` or the
+`/api/aiops/*` proxy. Build the UI from local source with the override:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f keep-aiops/deploy/docker-compose.aiops.yml \
+  -f keep-aiops/deploy/docker-compose.ui.yml \
+  up -d --build keep-frontend
+```
+
+Open http://localhost:3000 (NO_AUTH auto-signs in) → incident detail →
+**AI Investigation** panel (evidence, hypotheses, RCA draft, useful/not-useful
+feedback). Notes:
+
+- The override uses `dev:webpack` (turbopack fails on `next/font/google`'s
+  virtual module) and mounts the host corporate CA (`proxy-root.crt`) so the
+  font fetch survives TLS-intercepting proxies.
+- First compile of `/incidents` needs >6 GB heap; on small hosts add swap or
+  the container is OOM-killed (`docker inspect ... --format '{{.State.OOMKilled}}'`).
+
+## 8. Optional: live K8s evidence with kind
 
 ```bash
 kind create cluster --name keep-m0
