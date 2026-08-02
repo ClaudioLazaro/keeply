@@ -4,6 +4,7 @@ import { useRules } from "utils/hooks/useRules";
 import { CorrelationPlaceholder } from "./CorrelationPlaceholder";
 import { CorrelationTable } from "./CorrelationTable";
 import Loading from "@/app/(keep)/loading";
+import { SuggestedRules } from "./SuggestedRules";
 
 export const Client = () => {
   const { data: rules = [], isLoading } = useRules();
@@ -12,9 +13,16 @@ export const Client = () => {
     return <Loading />;
   }
 
-  if (rules.length === 0) {
-    return <CorrelationPlaceholder />;
-  }
-
-  return <CorrelationTable rules={rules} />;
+  // Suggestions render above both states: with no rules yet, a proposal is
+  // exactly what an operator needs to see.
+  return (
+    <>
+      <SuggestedRules />
+      {rules.length === 0 ? (
+        <CorrelationPlaceholder />
+      ) : (
+        <CorrelationTable rules={rules} />
+      )}
+    </>
+  );
 };
