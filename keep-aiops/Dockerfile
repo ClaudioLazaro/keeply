@@ -12,7 +12,6 @@ COPY alembic ./alembic
 # Seed content for the Knowledge Engine (AIOPS_KNOWLEDGE_SEED_DIR)
 COPY examples ./examples
 
-RUN pip install --no-cache-dir .
-
+RUN pip install --no-cache-dir '.[live]'
 # Default command runs aiops-api; override with mcp_gateway.main:app for the gateway
 CMD ["uvicorn", "aiops_api.main:app", "--host", "0.0.0.0", "--port", "8080"]

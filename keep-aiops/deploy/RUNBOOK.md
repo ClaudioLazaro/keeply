@@ -164,4 +164,63 @@ Without a cluster or the `kubernetes` extra, live mode fails closed with `503` +
 ```bash
 docker compose -f docker-compose.yml -f keep-aiops/deploy/docker-compose.aiops.yml down -v
 kind delete cluster --name keep-m0 2>/dev/null || true
+
+
+## 9. M3 — Multi-agent + cost budget smoke
+
+After M2 the AI plane gained a coordinator + 10 specialists and a
+per-investigation cost budget. Smoke both at the HTTP layer.
+
+### 9.1 Tool catalog now exposes 19 read-only tools
+
+```bash
+curl -s localhost:8090/v1/mcp/tools | jq 'length'   # expect 19
+curl -s localhost:8090/v1/mcp/tools | jq -r '.[].name' | sort
+# expect (sorted): bb_list_open_pull_requests, bb_list_recent_commits,
+#   backstage_get_entity, argocd_get_app, argocd_list_apps,
+#   dd_list_events, dd_query_metrics, eks_describe_nodegroups,
+#   eks_list_clusters, get_events, get_logs, get_pods,
+#   jira_search_issues, prom_alerts, prom_query, prom_query_range,
+#   rds_describe_instance_status, rds_list_instances,
+#   slack_search_messages
 ```
+
+Every entry is `execution_class == "read"` (ADR-0003, fail-closed).
+Mutate tools are still 403:
+
+```bash
+curl -s -X POST localhost:8090/v1/mcp/tools/delete_pod:invoke \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"t1","investigation_id":"i1","arguments":{}}' -i | head -1
+# expect: HTTP/1.1 403
+```
+
+### 9.2 Per-investigation budget enforcement
+
+Tighten the budget to make the cap observable without changing the
+specialist count:
+
+```bash
+# Re-start aiops-api with a 1-call tool budget and a 5s wall cap
+docker compose -f docker-compose.yml -f keep-aiops/deploy/docker-compose.aiops.yml \
+  stop aiops-api
+docker compose -f docker-compose.yml -f keep-aiops/deploy/docker-compose.aiops.yml \
+  run -d -e AIOPS_BUDGET_MAX_TOOL_CALLS=1 -e AIOPS_BUDGET_MAX_WALL_TIME_SECONDS=5 \
+  --service-ports aiops-api
+```
+
+Send a qualifying incident and watch the budget metrics:
+
+```bash
+curl -s -X POST localhost:8080/incidents \
+  -H 'Content-Type: application/json' -H 'X-API-KEY: dev-key' \
+  -d '{"incident_name":"budget demo","severity":"critical"}'
+curl -s localhost:8081/v1/investigations | jq '.[0]'
+# expect: status == "failed", error starts with "BudgetExceeded"
+
+curl -s localhost:8081/metrics | grep keep_aiops_investigation_cost_exceeded_total
+# expect: keep_aiops_investigation_cost_exceeded_total{kind="tool_calls"} 1.0
+```
+
+Restore the default budget and the next incident completes to
+`rca_ready` as before.

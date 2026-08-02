@@ -1,21 +1,25 @@
-"""Investigation FSM service.
+"""Investigation FSM service (M3 — coordinator + specialists).
 
 Flow for an eligible `incident.created` (severity in
 settings.auto_investigate_severities):
 
 1. create Investigation idempotently (unique on tenant_id+incident_id)
-2. background: queued -> gathering — call read-only MCP gateway tools
-   (get_pods / get_events / get_logs), each invocation policy-checked
+2. background: queued -> gathering — the coordinator runs the default
+   roster of specialists (kubernetes, prometheus, datadog, aws_eks, aws_rds,
+   argocd, jira, slack, bitbucket, backstage), each invocation policy-checked
    (fail-closed) and persisted as Evidence; individual tool failures become
-   evidence-gap notes and the run continues
+   evidence-gap notes and the run continues; the per-investigation budget
+   caps tool calls, wall-time and LLM tokens
 3. gathering -> hypothesizing — assemble the context pack, retrieve knowledge
    (best-effort), then generate hypotheses + an RCA draft with [E#]/[K#]
    citations (LiteLLM when AIOPS_LLM_MODEL is set, deterministic rules
-   otherwise); hypotheses and the citations map are persisted
+   otherwise); the LLM call consumes the token budget
 4. hypothesizing -> rca_ready — write back to Keep: incident comment (draft +
    references section) + aiops.* enrichment keys
 
 Any unexpected error moves the investigation to `failed` with the error text.
+`BudgetExceeded` is the special case where the cost cap was hit — the
+tracker is reported in the error string so the operator can see what blew.
 `incident.updated` is a no-op when an investigation exists (logged).
 `incident.resolved` sets `incident_resolved=True` and keeps the status
 (rca_ready) so the draft remains available — see models.Investigation.
@@ -25,22 +29,33 @@ import logging
 import time
 from typing import Any
 
-import httpx
 from sqlmodel import select
 
 from aiops_api import metrics
 from aiops_api.db import session_scope
+from aiops_api.modules.config.models import GLOBAL_TENANT
 from aiops_api.modules.event_bridge.schemas import EventType, KeepEventEnvelope
 from aiops_api.modules.orchestrator.models import Evidence, Investigation, _utcnow
-from aiops_api.modules.policy import PolicyDenied, assert_tool_allowed
 from aiops_api.modules.rca import Hypothesis, generate_rca
+from aiops_api.modules.specialists.base import Budget, BudgetExceeded
+from aiops_api.modules.specialists.coordinator import run_specialists
+from aiops_api.modules.specialists.tracker import BudgetTracker
 from aiops_api.settings import Settings, get_settings
 from aiops_api.telemetry import investigation_span
 
 logger = logging.getLogger(__name__)
 
-GATHER_TOOLS = ("get_pods", "get_events", "get_logs")
-INVESTIGATION_TIMEOUT = 15.0
+
+def _budget_for(tenant_id: str, settings: Settings) -> Budget:
+    """Budget from the persisted agent config, falling back to env."""
+    from aiops_api.modules.config import get_effective_config
+
+    config = get_effective_config(tenant_id)
+    return Budget(
+        tool_calls=config.budget_max_tool_calls,
+        wall_time=config.budget_max_wall_time_seconds,
+        llm_tokens=config.budget_max_llm_tokens,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -53,7 +68,10 @@ def handle_event(event: KeepEventEnvelope, background_tasks: Any, settings: Sett
     settings = settings or get_settings()
 
     if event.type == EventType.INCIDENT_CREATED:
-        if event.data.severity.value not in settings.auto_investigate_severities:
+        from aiops_api.modules.config import get_effective_config
+
+        severities = get_effective_config(event.tenantid).auto_investigate_severities
+        if event.data.severity.value not in severities:
             logger.info(
                 "incident.created below auto-investigate severities, skipping",
                 extra={"severity": event.data.severity.value, "incident_id": event.data.incident_id},
@@ -157,6 +175,10 @@ def run_investigation(investigation_id: str) -> None:
     start = time.monotonic()
     metrics.investigations_active.inc()
     mode = "suggest"  # M0 is suggest-only; relabel if modes are introduced
+    # Budget is resolved after the tenant is known — caps are per-tenant
+    # configurable, so a global default would be the wrong ceiling.
+    budget = _budget_for(GLOBAL_TENANT, settings)
+    tracker: BudgetTracker | None = None
     try:
         with session_scope() as session:
             investigation = session.get(Investigation, investigation_id)
@@ -166,17 +188,23 @@ def run_investigation(investigation_id: str) -> None:
             mode = investigation.mode
             tenant_id, incident_id = investigation.tenant_id, investigation.incident_id
             _set_status(session, investigation, "gathering")
+        budget = _budget_for(tenant_id, settings)
 
         with investigation_span(investigation_id, tenant_id=tenant_id, incident_id=incident_id):
             with session_scope() as session:
                 investigation = session.get(Investigation, investigation_id)
-                evidence = _gather_evidence(session, investigation, settings)
+                evidence, tracker = _gather_phase(investigation, settings, budget)
+                for item in evidence:
+                    session.add(item)
                 _build_and_store_context_pack(investigation, tenant_id, incident_id, settings)
                 _set_status(session, investigation, "hypothesizing")
                 knowledge_results = _query_knowledge_safe(investigation, evidence)
                 rca_draft, hypotheses, citations = generate_rca(
                     investigation, evidence, investigation.context_pack, knowledge_results, settings=settings
                 )
+                # Charge the LLM (or fallback) cost to the budget so a runaway
+                # token series fails the investigation on the next check.
+                _charge_llm(tracker, rca_draft, citations)
                 for hypothesis in hypotheses:
                     session.add(
                         Hypothesis(
@@ -185,6 +213,11 @@ def run_investigation(investigation_id: str) -> None:
                             confidence=hypothesis["confidence"],
                             supporting_evidence=hypothesis["supporting_evidence"],
                             supporting_knowledge=hypothesis["supporting_knowledge"],
+                            # Persist the corroboration verdict; without it
+                            # the API returns a discounted confidence with
+                            # no explanation of why it is low.
+                            corroborated=bool(hypothesis.get("corroborated", True)),
+                            caveat=hypothesis.get("caveat"),
                         )
                     )
                 investigation.rca_draft = rca_draft
@@ -203,21 +236,74 @@ def run_investigation(investigation_id: str) -> None:
             )
         metrics.investigations_completed.labels(mode=mode).inc()
         metrics.investigation_duration.labels(mode=mode).observe(time.monotonic() - start)
+    except BudgetExceeded as exc:
+        # Cost cap hit — surface a clean "failed" status with the breach detail.
+        metrics.investigations_failed.labels(mode=mode).inc()
+        metrics.investigation_duration.labels(mode=mode).observe(time.monotonic() - start)
+        metrics.investigation_cost_exceeded.labels(kind=exc.kind).inc()
+        logger.warning(
+            "investigation failed: budget exceeded",
+            extra={"investigation_id": investigation_id, "kind": exc.kind, "limit": exc.limit},
+        )
+        _mark_failed(investigation_id, f"{type(exc).__name__}({exc.kind}): {exc}")
     except Exception as exc:  # noqa: BLE001 — FSM must capture, never raise from a background task
         metrics.investigations_failed.labels(mode=mode).inc()
         metrics.investigation_duration.labels(mode=mode).observe(time.monotonic() - start)
         logger.exception("investigation failed", extra={"investigation_id": investigation_id})
-        try:
-            with session_scope() as session:
-                investigation = session.get(Investigation, investigation_id)
-                if investigation is not None:
-                    investigation.error = f"{type(exc).__name__}: {exc}"
-                    _set_status(session, investigation, "failed")
-                    session.add(investigation)
-        except Exception:  # noqa: BLE001
-            logger.exception("could not mark investigation failed", extra={"investigation_id": investigation_id})
+        _mark_failed(investigation_id, f"{type(exc).__name__}: {exc}")
     finally:
+        if tracker is not None:
+            snap = tracker.snapshot()
+            metrics.investigation_cost.labels(kind="wall_time_seconds").inc(int(snap["wall_time"]))
         metrics.investigations_active.dec()
+
+
+def _gather_phase(
+    investigation: Investigation, settings: Settings, budget: Budget
+) -> tuple[list[Evidence], BudgetTracker]:
+    """Run the coordinator against the MCP gateway; persist nothing here.
+
+    The orchestrator owns the session and the persistence step; the
+    coordinator is a pure function over the gateway. The returned tracker
+    is the same one the coordinator used, so the LLM phase can charge the
+    same budget.
+    """
+    evidence, _results, tracker = run_specialists(
+        investigation_id=investigation.id,
+        tenant_id=investigation.tenant_id,
+        gateway_url=settings.mcp_gateway_url,
+        budget=budget,
+    )
+    return evidence, tracker
+
+
+def _charge_llm(tracker: BudgetTracker | None, rca_draft: str, citations: dict | None) -> None:
+    """Best-effort cost charge for the RCA writer call.
+
+    The deterministic fallback is zero tokens. The LiteLLM path returns a
+    ``usage`` object we can trust; the engine writes the count into
+    ``rca_citations['_llm_total_tokens']`` so the tracker picks it up.
+    """
+    if tracker is None or not isinstance(citations, dict):
+        return
+    used = citations.get("_llm_total_tokens") or 0
+    try:
+        tracker.record_llm_tokens(int(used))
+    except BudgetExceeded:
+        # Let the outer FSM handler mark this failed.
+        raise
+
+
+def _mark_failed(investigation_id: str, error_text: str) -> None:
+    try:
+        with session_scope() as session:
+            investigation = session.get(Investigation, investigation_id)
+            if investigation is not None:
+                investigation.error = error_text
+                _set_status(session, investigation, "failed")
+                session.add(investigation)
+    except Exception:  # noqa: BLE001
+        logger.exception("could not mark investigation failed", extra={"investigation_id": investigation_id})
 
 
 def _set_status(session, investigation: Investigation, status: str) -> None:
@@ -242,144 +328,11 @@ def _build_and_store_context_pack(
     except Exception:  # noqa: BLE001
         logger.exception("context pack build failed", extra={"investigation_id": investigation.id})
 
-
-# --------------------------------------------------------------------------- #
-# Evidence gathering via the MCP gateway (all calls policy-gated, fail-closed)
-# --------------------------------------------------------------------------- #
-
-
-def _fetch_tool_catalog(client: httpx.Client, gateway_url: str) -> dict[str, dict]:
-    response = client.get(f"{gateway_url}/v1/mcp/tools")
-    response.raise_for_status()
-    return {tool["name"]: tool for tool in response.json()}
-
-
-def _invoke_tool(
-    client: httpx.Client,
-    gateway_url: str,
-    catalog: dict[str, dict],
-    tool: str,
-    tenant_id: str,
-    investigation_id: str,
-    arguments: dict[str, Any],
-) -> dict[str, Any]:
-    """Invoke one gateway tool after a fail-closed policy check."""
-    descriptor = catalog.get(tool)
-    # Fail-closed: unknown tools are denied exactly like mutate-class tools.
-    assert_tool_allowed(tool, descriptor.get("execution_class") if descriptor else None)
-    response = client.post(
-        f"{gateway_url}/v1/mcp/tools/{tool}:invoke",
-        json={"tenant_id": tenant_id, "investigation_id": investigation_id, "arguments": arguments},
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def _default_arguments(tool: str, pods_result: Any) -> dict[str, Any]:
-    if tool == "get_logs":
-        pod = _first_pod_name(pods_result)
-        return {"pod": pod, "tail_lines": 100} if pod else {"pod": ""}
-    return {}
-
-
-def _first_pod_name(pods_result: Any) -> str | None:
-    """Best-effort extraction of a pod name from a get_pods result."""
-    items = None
-    if isinstance(pods_result, dict):
-        items = pods_result.get("pods") or pods_result.get("items")
-    elif isinstance(pods_result, list):
-        items = pods_result
-    if not items:
-        return None
-    first = items[0]
-    if isinstance(first, str):
-        return first
-    if isinstance(first, dict):
-        if isinstance(first.get("name"), str):
-            return first["name"]
-        metadata = first.get("metadata")
-        if isinstance(metadata, dict) and isinstance(metadata.get("name"), str):
-            return metadata["name"]
-    return None
-
-
-def _summarize(tool: str, result: Any) -> str:
-    if isinstance(result, dict):
-        for key in ("pods", "items", "events"):
-            value = result.get(key)
-            if isinstance(value, list):
-                return f"{tool}: {len(value)} {key} returned"
-        if isinstance(result.get("logs"), str):
-            lines = result["logs"].count("\n") + 1
-            return f"{tool}: {lines} log lines returned"
-    if isinstance(result, list):
-        return f"{tool}: {len(result)} items returned"
-    return f"{tool}: result received ({type(result).__name__})"
-
-
-def _gather_evidence(session, investigation: Investigation, settings: Settings) -> list[Evidence]:
-    evidence: list[Evidence] = []
-    pods_result: Any = None
-    with httpx.Client(timeout=INVESTIGATION_TIMEOUT) as client:
-        catalog = _fetch_tool_catalog(client, settings.mcp_gateway_url)
-        for tool in GATHER_TOOLS:
-            arguments = _default_arguments(tool, pods_result)
-            with investigation_span(investigation.id, name=f"mcp.tool.{tool}", tool=tool) as tool_span:
-                try:
-                    outcome = _invoke_tool(
-                        client,
-                        settings.mcp_gateway_url,
-                        catalog,
-                        tool,
-                        investigation.tenant_id,
-                        investigation.id,
-                        arguments,
-                    )
-                    result, audit_id = outcome.get("result"), outcome.get("audit_id")
-                    metrics.mcp_tool_calls.labels(tool=tool, outcome="success").inc()
-                    tool_span.set_attribute("outcome", "success")
-                    if tool == "get_pods":
-                        pods_result = result
-                    record = Evidence(
-                        investigation_id=investigation.id,
-                        tool=tool,
-                        summary=_summarize(tool, result),
-                        payload={"arguments": arguments, "result": result, "audit_id": audit_id},
-                    )
-                except PolicyDenied as exc:
-                    # Policy denial on a read tool is a misconfiguration: record the
-                    # gap and keep gathering (fail-closed already prevented the call).
-                    metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
-                    metrics.evidence_gaps.labels(tool=tool).inc()
-                    tool_span.set_attribute("outcome", "policy_denied")
-                    record = Evidence(
-                        investigation_id=investigation.id,
-                        tool=tool,
-                        summary=f"{tool}: evidence gap — policy denied ({exc.reason})",
-                        payload={"arguments": arguments, "error": str(exc)},
-                    )
-                except Exception as exc:  # noqa: BLE001 — tolerate individual tool failure
-                    metrics.mcp_tool_calls.labels(tool=tool, outcome="error").inc()
-                    metrics.evidence_gaps.labels(tool=tool).inc()
-                    tool_span.set_attribute("outcome", "error")
-                    logger.warning(
-                        "tool invocation failed, recording evidence gap",
-                        extra={"tool": tool, "investigation_id": investigation.id, "error": str(exc)},
-                    )
-                    record = Evidence(
-                        investigation_id=investigation.id,
-                        tool=tool,
-                        summary=f"{tool}: evidence gap — {type(exc).__name__}: {exc}",
-                        payload={"arguments": arguments, "error": f"{type(exc).__name__}: {exc}"},
-                    )
-            session.add(record)
-            evidence.append(record)
-    return evidence
-
-
 # --------------------------------------------------------------------------- #
 # Knowledge retrieval (best-effort; never fails the investigation)
 # --------------------------------------------------------------------------- #
+
+
 
 
 def _query_knowledge_safe(investigation: Investigation, evidence: list[Evidence]) -> list[dict]:

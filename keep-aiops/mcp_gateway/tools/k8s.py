@@ -13,13 +13,13 @@ retry hint.
 
 from __future__ import annotations
 
-from typing import Any
-
+from mcp_gateway import integrations
 from mcp_gateway.settings import get_settings
 from mcp_gateway.tools import register_tool
+from mcp_gateway.tools.backend import BackendUnavailable
 
 
-class KubernetesBackendUnavailable(RuntimeError):
+class KubernetesBackendUnavailable(BackendUnavailable):
     """Raised when the live Kubernetes backend cannot serve a request."""
 
 
@@ -265,9 +265,10 @@ def _live_get_logs(pod: str, namespace: str, tail_lines: int) -> dict[str, Any]:
     name="get_pods",
     description="List Kubernetes pods with phase, readiness, restarts and waiting state (e.g. CrashLoopBackOff).",
     input_schema=GET_PODS_SCHEMA,
+    mode_setting="k8s_mode",
 )
 def get_pods(namespace: str | None = None) -> dict[str, Any]:
-    if get_settings().k8s_mode == "live":
+    if integrations.mode("k8s") == "live":
         return _live_get_pods(namespace)
     pods = _STUB_PODS if namespace is None else [p for p in _STUB_PODS if p["namespace"] == namespace]
     return {"backend": "stub", "namespace": namespace or "all", "pods": pods}
@@ -277,9 +278,10 @@ def get_pods(namespace: str | None = None) -> dict[str, Any]:
     name="get_events",
     description="List Kubernetes events (warnings such as BackOff / OOMKilling first-class for RCA).",
     input_schema=GET_EVENTS_SCHEMA,
+    mode_setting="k8s_mode",
 )
 def get_events(namespace: str | None = None) -> dict[str, Any]:
-    if get_settings().k8s_mode == "live":
+    if integrations.mode("k8s") == "live":
         return _live_get_events(namespace)
     events = _STUB_EVENTS if namespace is None else [e for e in _STUB_EVENTS if e["namespace"] == namespace]
     return {"backend": "stub", "namespace": namespace or "all", "events": events}
@@ -289,9 +291,10 @@ def get_events(namespace: str | None = None) -> dict[str, Any]:
     name="get_logs",
     description="Fetch tail log lines for a pod (default 100 lines).",
     input_schema=GET_LOGS_SCHEMA,
+    mode_setting="k8s_mode",
 )
 def get_logs(pod: str, namespace: str = "default", tail_lines: int = 100) -> dict[str, Any]:
-    if get_settings().k8s_mode == "live":
+    if integrations.mode("k8s") == "live":
         return _live_get_logs(pod, namespace, tail_lines)
     return {
         "backend": "stub",

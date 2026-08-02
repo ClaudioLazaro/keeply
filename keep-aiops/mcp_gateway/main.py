@@ -23,9 +23,7 @@ from mcp_gateway.audit import build_audit_entry, record_audit
 from mcp_gateway.settings import get_settings
 from mcp_gateway.telemetry import init_telemetry, tool_span
 from mcp_gateway.tools import catalog, get_tool, validate_arguments
-from mcp_gateway.tools.k8s import KubernetesBackendUnavailable
-from mcp_gateway.tools.prometheus import PrometheusBackendUnavailable
-
+from mcp_gateway.tools.backend import BackendUnavailable
 
 class InvokeRequest(BaseModel):
     tenant_id: str
@@ -74,18 +72,21 @@ def create_app() -> FastAPI:
             with tool_span(tool=tool, tenant_id=body.tenant_id, investigation_id=body.investigation_id):
                 try:
                     result = await run_in_threadpool(spec.handler, **body.arguments)
-                except (KubernetesBackendUnavailable, PrometheusBackendUnavailable) as exc:
+                except BackendUnavailable as exc:
+                    # Live backend (k8s, prometheus, datadog, eks, rds,
+                    # argocd, jira, slack, bitbucket, backstage) is
+                    # unreachable or unconfigured. 503 + retry hint so the
+                    # orchestrator can mark an evidence gap and keep going.
                     outcome = "backend_unavailable"
                     raise HTTPException(
                         status_code=503,
                         detail={
                             "error": str(exc),
                             "hint": "tool backend temporarily unavailable; retry with backoff",
-                            "retry_after_seconds": 5,
+                            "retry_after_seconds": exc.retry_after_seconds,
                         },
                     ) from exc
                 except ValueError as exc:
-                    # Handler-level argument validation (e.g. RFC3339 start/end, end > start)
                     outcome = "validation_error"
                     raise HTTPException(status_code=422, detail=[str(exc)]) from exc
             return InvokeResponse(result=result, audit_id=audit_id)

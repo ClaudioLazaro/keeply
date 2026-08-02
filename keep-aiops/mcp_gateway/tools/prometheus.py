@@ -12,23 +12,24 @@ or unreachable backend surfaces as :class:`PrometheusBackendUnavailable`,
 which the gateway maps to 503 with a retry hint.
 """
 
-from __future__ import annotations
-
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
+from mcp_gateway import integrations
 from mcp_gateway.settings import get_settings
 from mcp_gateway.tools import register_tool
+from mcp_gateway.tools.backend import BackendUnavailable
+
+
+class PrometheusBackendUnavailable(BackendUnavailable):
+    """Raised when the live Prometheus backend cannot serve a request."""
+
 
 # Incident anchor time, aligned with the k8s stub payloads (OOMKilled at ~10:14).
 _INCIDENT_END = "2026-07-29T10:15:00Z"
 _INCIDENT_START = "2026-07-29T09:45:00Z"  # 30 min ramp before the incident
-
-
-class PrometheusBackendUnavailable(RuntimeError):
-    """Raised when the live Prometheus backend cannot serve a request."""
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +185,7 @@ def _stub_query_range(query: str, start_ts: float, end_ts: float, step: int) -> 
 
 
 def _live_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
-    url = get_settings().prometheus_url
+    url = integrations.value("prometheus", "url")
     if not url:
         raise PrometheusBackendUnavailable(
             "MCP_PROMETHEUS_URL not configured; set it or use MCP_PROMETHEUS_MODE=stub"
@@ -210,9 +211,10 @@ def _live_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
     name="prom_query",
     description="Run an instant PromQL query and return the current vector (e.g. current HTTP 5xx rate per service).",
     input_schema=PROM_QUERY_SCHEMA,
+    mode_setting="prometheus_mode",
 )
 def prom_query(query: str) -> dict[str, Any]:
-    if get_settings().prometheus_mode == "live":
+    if integrations.mode("prometheus") == "live":
         return _live_get("query", {"query": query})
     return _stub_query(query)
 
@@ -221,6 +223,7 @@ def prom_query(query: str) -> dict[str, Any]:
     name="prom_query_range",
     description="Run a range PromQL query and return a matrix of values over time (start/end RFC3339, step seconds).",
     input_schema=PROM_QUERY_RANGE_SCHEMA,
+    mode_setting="prometheus_mode",
 )
 def prom_query_range(
     query: str,
@@ -229,7 +232,7 @@ def prom_query_range(
     step: int = 60,
 ) -> dict[str, Any]:
     start_ts, end_ts = _resolve_range(start, end)
-    if get_settings().prometheus_mode == "live":
+    if integrations.mode("prometheus") == "live":
         return _live_get(
             "query_range",
             {"query": query, "start": start_ts, "end": end_ts, "step": step},
@@ -241,8 +244,9 @@ def prom_query_range(
     name="prom_alerts",
     description="List currently firing Prometheus alerts (alertname, labels, annotations, state).",
     input_schema=PROM_ALERTS_SCHEMA,
+    mode_setting="prometheus_mode",
 )
 def prom_alerts() -> dict[str, Any]:
-    if get_settings().prometheus_mode == "live":
+    if integrations.mode("prometheus") == "live":
         return _live_get("alerts", {})
     return {"backend": "stub", "status": "success", "data": {"alerts": _STUB_ALERTS}}

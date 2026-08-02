@@ -19,6 +19,11 @@ class ToolSpec:
     input_schema: dict[str, Any]
     handler: Callable[..., Any]
     execution_class: str = "read"
+    # Name of the settings attribute holding this tool's stub/live mode
+    # (e.g. "k8s_mode"). The catalog resolves it so consumers can tell
+    # real evidence from canned demo payloads — a stub result is
+    # indistinguishable from a live one once it is a dict.
+    mode_setting: str | None = None
 
 
 _REGISTRY: dict[str, ToolSpec] = {}
@@ -30,6 +35,7 @@ def register_tool(
     description: str,
     input_schema: dict[str, Any],
     execution_class: str = "read",
+    mode_setting: str | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator registering ``fn`` as an MCP tool."""
 
@@ -42,6 +48,7 @@ def register_tool(
             input_schema=input_schema,
             handler=fn,
             execution_class=execution_class,
+            mode_setting=mode_setting,
         )
         return fn
 
@@ -57,14 +64,39 @@ def get_tool(name: str) -> ToolSpec | None:
     return _REGISTRY.get(name)
 
 
+def tool_mode(spec: ToolSpec) -> str:
+    """Resolve a tool's current stub/live mode.
+
+    Goes through the same resolution the tool itself uses (operator config
+    over env default) so the catalog can never advertise a mode that
+    differs from what an invocation would actually do.
+
+    Returns "unknown" when the tool declares no mode setting — better an
+    explicit unknown than silently claiming the result is live.
+    """
+    if spec.mode_setting is None:
+        return "unknown"
+    from mcp_gateway import integrations
+
+    # mode_setting is "<integration>_mode"; the resolver keys on the
+    # integration name.
+    return integrations.mode(spec.mode_setting.removesuffix("_mode"))
+
+
 def catalog() -> list[dict[str, Any]]:
-    """Catalog entries per gateway contract: name/description/execution_class/input_schema."""
+    """Catalog entries: name/description/execution_class/input_schema/mode.
+
+    ``mode`` tells the consumer whether invoking this tool yields real data
+    ("live") or a canned demo payload ("stub"). Without it, an RCA built on
+    stub evidence looks exactly like one built on production telemetry.
+    """
     return [
         {
             "name": spec.name,
             "description": spec.description,
             "execution_class": spec.execution_class,
             "input_schema": spec.input_schema,
+            "mode": tool_mode(spec),
         }
         for spec in sorted(_REGISTRY.values(), key=lambda s: s.name)
     ]
@@ -127,3 +159,11 @@ def validate_arguments(schema: dict[str, Any], arguments: Any) -> list[str]:
 # Tool servers self-register on import. Add new servers here.
 from mcp_gateway.tools import k8s as k8s  # noqa: E402,F401
 from mcp_gateway.tools import prometheus as prometheus  # noqa: E402,F401
+from mcp_gateway.tools import datadog as datadog  # noqa: E402,F401
+from mcp_gateway.tools import aws_eks as aws_eks  # noqa: E402,F401
+from mcp_gateway.tools import aws_rds as aws_rds  # noqa: E402,F401
+from mcp_gateway.tools import argocd as argocd  # noqa: E402,F401
+from mcp_gateway.tools import jira as jira  # noqa: E402,F401
+from mcp_gateway.tools import slack as slack  # noqa: E402,F401
+from mcp_gateway.tools import bitbucket as bitbucket  # noqa: E402,F401
+from mcp_gateway.tools import backstage as backstage  # noqa: E402,F401

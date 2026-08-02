@@ -47,6 +47,15 @@ class Investigation(SQLModel, table=True):
 
 
 class Evidence(SQLModel, table=True):
+    """One tool result (or gap) gathered during an investigation.
+
+    ``backend`` records the provenance of the payload: "live" means the
+    tool talked to a real system, "stub" means it returned a canned demo
+    payload, "gap" means the call failed. This is a first-class column
+    rather than a payload detail because an RCA built on stub data must
+    never be presentable as one built on production telemetry.
+    """
+
     __tablename__ = "evidence"
 
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
@@ -54,4 +63,6 @@ class Evidence(SQLModel, table=True):
     tool: str
     summary: str
     payload: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # live | stub | gap | unknown ("unknown" = the tool reported no mode)
+    backend: str = Field(default="unknown", index=True)
     created_at: datetime = Field(default_factory=_utcnow)
