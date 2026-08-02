@@ -17,6 +17,15 @@ class GeminiProviderAuthConfig:
             "sensitive": True,
         },
     )
+    model: str | None = dataclasses.field(
+        metadata={
+            "required": False,
+            "description": "Model to use by default",
+            "hint": "gemini-2.0-flash",
+            "sensitive": False,
+        },
+        default=None,
+    )
 
 
 class GeminiProvider(BaseProvider):
@@ -43,10 +52,11 @@ class GeminiProvider(BaseProvider):
     def _query(
         self,
         prompt,
-        model="gemini-pro",
+        model=None,
         max_tokens=1024,
         structured_output_format=None,
     ):
+        model = model or self.authentication_config.model or "gemini-pro"
         genai.configure(api_key=self.authentication_config.api_key)
         
         model = genai.GenerativeModel(model)

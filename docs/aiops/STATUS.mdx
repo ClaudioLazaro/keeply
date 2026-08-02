@@ -11,14 +11,10 @@ description: "Status vivo da evolução do produto Keep AI-Native — otimizado 
 
 | Campo | Valor |
 |-------|-------|
-| **Última atualização** | 2026-07-30 (**M2 CONCLUÍDO** — aceite e2e AC1–AC7 verificado ao vivo) |
-| **Direção de produto** | Adotada — evoluir o Keep para produto AI-native, compatível com o Keep atual |
-| **Arquitetura** | `Keep Evolved = Fundação Keep + Plano de Controle de IA (monólito modular) + MCP Tool Mesh` |
-| **Fase atual** | **M2 — MVP: CONCLUÍDO** (aceite e2e AC1–AC7 verificado em 2026-07-30) → próximo: M3 (multi-agent + expansão MCP) |
+| **Última atualização** | 2026-08-01 (**M3 CONCLUÍDO** + **correção de roteamento do frontend no K3D** — a UI estava quebrada no cluster; ver "Correção de roteamento" abaixo) |
+| **Fase atual** | **M3 — Multi-agent + cost budget: CONCLUÍDO** (compose + K3D) → próximo: M4 (Policy + remediation planning) |
 | **Status dos docs** | Baseline escrita e ratificada |
-| **Status do código** | Repo migrado para Bitbucket (`acertodevs/acerto-keep`, origin); upstream Keep preservado como remote `upstream`. M2: context builder, knowledge RAG, RCA writer, painel UI, eval harness e human feedback implementados |
-| **Bloqueios** | Nenhum |
-
+| **Status do código** | Repo migrado para Bitbucket (`acertodevs/acerto-keep`, origin); upstream Keep preservado como remote `upstream`. M2 + M3 implementados; **M3 também deployed em K3D** (`k8s/` + `k8s/RUNBOOK.md`) |
 ## Resumo de um parágrafo (cole em outro LLM)
 
 Estamos evoluindo o Keep (https://github.com/keephq/keep) para um novo produto AIOps AI-native sem reescrever o núcleo. O Keep permanece o sistema de registro de alertas/incidentes/auth/workflows/providers. O novo plano de controle de IA (monólito modular primeiro) cuida de investigação, agents, RCA, RAG, decisão, policy e execução. O MCP Gateway é o único barramento de ferramentas. A policy é fail-closed; o MVP é suggest-only (sem mutate). Stack de agents: LangGraph para orquestração de investigação, LiteLLM para roteamento multi-modelo, ferramentas apenas via MCP Gateway — não LangChain clássico; CopilotKit fica só na UI. Docs em `docs/aiops/`. Plano adotado; M0 concluído (evento → investigação read-only → writeback na timeline do Keep); próxima fase é o M1. Não fazer fork do Keep. Reusar capacidades existentes; implementar só o que falta.
@@ -114,16 +110,204 @@ Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `def
 - [x] AC6 — Catálogo MCP só tem `execution_class=read`; mutate → `deny`, read → `allow`, desconhecido → `deny` (fail-closed); invoke de tool mutate → 404
 - [x] AC7 — Spans `investigation`, `mcp.tool.{get_pods,get_events,get_logs}`, `knowledge.retrieve`, `rca.generate` todos com atributo `investigation_id` (gap de spans de tool calls corrigido durante o aceite)
 
-### Depois (M3+)
+### Milestone M3 — Multi-agent + cost budget
+
+| Entregável | Status | Notas |
+|------------|--------|-------|
+| Coordinator + specialists (refactor do gathering) | `done` | `aiops_api/modules/specialists/` — coordinator + 10 specialists (k8s, prometheus, datadog, aws_eks, aws_rds, argocd, jira, slack, bitbucket, backstage). Specialist só roda se ao menos uma das suas tools está no catálogo live (mantém o M0/M2 demo path idêntico) |
+| Per-investigation cost budget (M3 AC: budget enforced) | `done` | `Budget` + `BudgetTracker` em `specialists/`. Caps configuráveis: `AIOPS_BUDGET_MAX_TOOL_CALLS` (50), `AIOPS_BUDGET_MAX_WALL_TIME_SECONDS` (120), `AIOPS_BUDGET_MAX_LLM_TOKENS` (200_000). Breach → `BudgetExceeded` → FSM vai para `failed` com `error: "BudgetExceeded(tool_calls): ..."`. Métricas: `keep_aiops_investigation_cost_total{kind}` + `keep_aiops_investigation_cost_exceeded_total{kind}` |
+| LLM token accounting para o budget | `done` | `rca/engine._call_llm` agora retorna `(parsed, total_tokens)`; service lê `citations["_llm_total_tokens"]` e cobra o tracker |
+| Novos MCP read tools (Datadog, EKS, RDS, ArgoCD, Jira, Slack, Bitbucket, Backstage) | `done` | `mcp_gateway/tools/{datadog,aws_eks,aws_rds,argocd,jira,slack,bitbucket,backstage}.py` — todos `execution_class=read`. Modo stub + live (URL + credenciais por env). Catálogo agora expõe 19 tools |
+| Shared `BackendUnavailable` + 503 mapping | `done` | `mcp_gateway/tools/backend.py`. Substitui o `except (Kubernetes, Prometheus)` antigo por um `except BackendUnavailable` único — Datadog/EKS/RDS/ArgoCD/Jira/Slack/Bitbucket/Backstage agora também retornam 503 com retry hint quando o live backend está indisponível |
+| Test suite verde | `done` | 158/158 pytest verde (inclui `test_specialists.py`, `test_budget.py`, `test_coordinator.py`, `test_m3_tools_catalog.py`); suíte M0/M2 continua passando (refactor é compatível) |
+| Smoke e2e M3 no runbook | `done` | `keep-aiops/deploy/RUNBOOK.md` §9 — catalog=19, mutate=403, budget breach → status `failed` + métrica |
+
+**Critérios de aceite do M3 — todos verificados:**
+
+- [x] ≥ 3 specialist agents no caminho de produção (10 disponíveis, todos read-only)
+- [x] Per-investigation cost budget enforced (test: `test_coordinator_budget_breach_propagates` reproduz a falha)
+- [x] Catálogo MCP só tem `execution_class=read` (test: `test_mcp_mutate_tool_is_403_fail_closed`)
+- [x] Backwards-compatible com M2: a suíte `test_orchestrator_fsm.py` continua verde sem alterações (apenas conftest `MCP_CATALOG` ainda tem os 3 tools do k8s)
+
+**Aceite M3 ao vivo em K3D (`keeply.clazar.net`):**
+
+- [x] Cluster `cuda-cluster` (k3d) recebe o stack: keep-backend, mcp-gateway, aiops-api, postgres, soketi via `k8s/00-04-*.yaml` + `IngressRoute` (path-strip via `stripPrefix` middleware)
+- [x] `MCP_K8S_MODE=live` no gateway + ServiceAccount `keep-mcp` + ClusterRole `keep-mcp-reader` (read-only) → 56 pods + 570 events do cluster real lidos como evidência
+- [x] Catalog via tunnel: `/mcp/v1/mcp/tools` retorna 19 tools, todas `execution_class=read`
+- [x] E2E via tunnel: `POST /incidents` → `rca_ready` em ~5s; `aiops.investigation_id` + `aiops.status` no Keep incident; evidência mista (live K8s + stub)
+- [x] Cost budget via tunnel: `AIOPS_BUDGET_MAX_TOOL_CALLS=1` → `status=failed`, `error="BudgetExceeded(tool_calls): tool_calls=2 > limit=1"`, `keep_aiops_investigation_cost_exceeded_total{kind="tool_calls"} 1.0` em `/aiops/metrics`
+- [x] Cloudflare tunnel `*.clazar.net` já cobre `keeply.clazar.net` (Cloudflare DNS + tunnel intactos, `cafecafe`/`vekssell` não foram tocados); o roteamento é decidido inteiramente pelo `IngressRoute` do cluster com `stripPrefix` middleware
+
+### Correção de roteamento do frontend (2026-08-01)
+
+A UI estava inutilizável no cluster. **Causa raiz:** os `IngressRoute` dividiam o mesmo host por path entre o Next.js e o keep-api, e os conjuntos de path colidiam. O app em si estava saudável — todas as rotas respondiam 200 dentro do pod.
+
+Três falhas simultâneas:
+
+1. `/` → 307 → `/incidents`, servido pelo **keep-backend** como JSON cru (o rule do frontend listava `/incidents/` com barra final; o do backend usava `PathPrefix('/incidents')` sem)
+2. `/backend/*` → 404 no Traefik. É o path relativo que o browser usa (`getApiUrlFromConfig` → default `/backend`), então **todo fetch client-side morria**
+3. 10 das 15 seções da UI (`/settings`, `/dashboard`, `/topology`, `/ai`, `/rules`, `/mapping`, `/extraction`, `/maintenance`, `/deduplication`, `/notifications-hub`) davam 404 — não estavam no allowlist enumerado
+
+**Modelo correto (agora em `k8s/06-ingressroutes.yaml`):** o Next.js é dono de todo o path space do host; o browser nunca fala com o keep-api direto (`API_URL` é server-side only e o `middleware.ts` faz o proxy de `/backend/*` in-process). Cada outro serviço ganha um prefixo que não colide:
+
+| Prefixo | Serviço | Middleware |
+|---------|---------|------------|
+| `/keepapi/*` | keep-backend | `strip-keepapi` + `keep-api-key` |
+| `/aiops/*` | aiops-api | `strip-aiops` |
+| `/mcp/*` | mcp-gateway | `strip-mcp` |
+| `/ws/*` | keep-websocket | `strip-ws` |
+| _catch-all_ | keep-frontend | — (priority 1) |
+
+Corrigido junto:
+
+- `PUSHER_HOST` era `keep-websocket` (nome de Service, não resolvível pelo browser) → agora `/ws` relativo, como `usePusher.ts:27` espera; websocket responde `101 Switching Protocols` pelo túnel
+- `k8s/05-frontend.yaml` apontava para a imagem publicada `keephq/keep-ui:latest` sem os envs de aiops → agora reflete o cluster: `keep-ui:keeply` (build do `Dockerfile.keeply`), `imagePullPolicy: IfNotPresent`, `AIOPS_API_KEY` do Secret, readiness em `/api/healthcheck`
+- `k8s/04-ingress.yaml` (Ingress stock) **removido** — não estava aplicado e suas regras `/api` e `/healthcheck` colidiam com a UI
+- Os `IngressRoute` viviam em `/tmp/keeply-ir.yaml`, fora do repo; agora versionados
+
+**Verificado ao vivo pelo túnel:** 15/15 seções da UI em 200 text/html; `/keepapi`, `/aiops`, `/mcp` 200 (catálogo = 19 tools, todas `read`); `/backend/incidents` 200 com Bearer; websocket 101; e2e novo → `rca_ready`, 18/19 tools com evidência (`get_pods` 57 pods + `get_events` 23 events em `backend=live`, gap só em `get_logs`); painel `/api/aiops/*` retorna o RCA draft na página do incidente.
+
+### Correção do redirect para `localhost:3000` (2026-08-01)
+
+Depois do roteamento, a UI ainda jogava o usuário em `http://localhost:3000/`. Causa raiz **no build da imagem**, não no cluster.
+
+Cadeia da falha:
+
+1. `Dockerfile.keeply` / `build-patches.sh` aplicavam um patch forçando `isAuthenticated = true` em NO_AUTH, para "pular o redirect para `/signin`"
+2. Mas `/signin` é exatamente onde o provider `NoAuth` (`auth.config.ts:185`) cria a **sessão e o accessToken**
+3. Sem sessão, todo fetch client-side para `/backend/*` saía sem `Authorization` → keep-backend respondia **401** (os logs do pod mostravam `Error: No valid session or access token found`)
+4. `shared/api/ApiClient.ts:85` chama `signOutClient()` do next-auth em 401
+5. O client do Auth.js v5 cai no seu fallback hardcoded `http://localhost:3000/api/auth` — verificado no bundle servido pelo pod
+
+**Correção:** patch removido (`middleware.ts` revertido ao upstream; passo 3 do `build-patches.sh` removido com nota). O fluxo real roda: `/` → `/incidents` → `/signin?callbackUrl=...` → `SignInForm` auto-submete o provider → sessão criada → volta para a app.
+
+Dois bugs de build encontrados no caminho — a imagem em execução tinha sido construída por outro caminho, porque **o `Dockerfile.keeply` não compilava**:
+
+- **`sed` corrompia o `middleware.ts`.** Em replacement de `sed`, `&` sem escape significa "todo o texto casado", então o `&&` do patch de `/api/aiops` duplicava o match e gerava `Expected ')', got 'pathname'`. Corrigido para `\&\&` nos dois arquivos
+- **`npm install` pulava as devDependencies.** `ENV NODE_ENV=production` vinha antes do install, e o toolchain de build (`tailwindcss`, `tailwind-variants`, `postcss`, `postcss-import`) mora em devDeps → `Cannot find module 'postcss-import'`. Corrigido com `npm install --include=dev`
+
+Também adicionados `NEXTAUTH_URL` / `AUTH_URL` (build ARG, default `https://keeply.clazar.net`) e `AUTH_TRUST_HOST=true` nos dois estágios. Efeito medido: o `callbackUrl` do redirect agora sai como `https://keeply.clazar.net/...` em vez de `http://`. Nota: isso **não** remove o literal `localhost:3000` do bundle — ele é constante da lib Auth.js; o que resolve o sintoma é o passo 1.
+
+**Verificado ao vivo pelo túnel:** `/` → `/incidents` → `/signin?callbackUrl=https://keeply.clazar.net/incidents` → 200; `POST /api/auth/callback/credentials` emite `__Secure-authjs.session-token` e redireciona para `/incidents`; `/api/auth/session` traz `user=keep`, `tenant=keep`, `accessToken` presente; `/backend/incidents` e `/backend/alerts` em 200 com o token da sessão; zero ocorrências de `No valid session` nos logs; 15/15 seções da UI em 200 text/html; painel aiops devolve o RCA draft.
+
+### Console AIOps na UI (2026-08-01)
+
+Até aqui a única superfície de UI das features novas era o card colapsável **"AI Investigation"** dentro da página do incidente — sem entrada no menu e fechado por padrão, então na prática invisível. Todo o resto do M0–M3 (specialists, budget, catálogo MCP, policies) só existia como REST.
+
+**Seção AIOps no sidebar** (`components/navbar/AIOpsLinks.tsx`, montada em `Navbar.tsx`), com badge de investigações em voo:
+
+| Rota | Página | Conteúdo |
+|------|--------|----------|
+| `/aiops` | Overview | totais, evidências + taxa de gaps, % rated useful, nº de tools; investigações por status; postura de execução (mode, engine de RCA, caps de budget) |
+| `/aiops/investigations` | Lista | todas as investigações, mais recentes primeiro, filtro por status e busca por id; erro de budget visível na linha; link para o incidente |
+| `/aiops/tools` | Catálogo MCP | as 19 tools com `execution_class`, decisão de policy efetiva e qual policy decidiu; badge "all read-class" vs "N non-read"; callout dedicado quando o gateway está fora |
+| `/aiops/policies` | Policies | regras por policy com escopo (global/tenant), decisão e enabled |
+
+**Backend — dois endpoints read-only novos:**
+
+- `GET /v1/tools` (`modules/tools/`) — re-expõe o catálogo do MCP gateway anotado com a decisão de policy de cada tool. O gateway é fronteira de segurança (ADR-0002) e o browser nunca fala com ele; a UI mantém um único upstream. Gateway fora → `gateway_available=false` + motivo, não 500
+- `GET /v1/stats` (`modules/stats/`) — agregados numa chamada: investigações por status (todos os buckets do FSM, inclusive os zerados), últimas 24h, evidências e gaps, feedback por rating, caps de budget configurados. Escopado por tenant quando auth está ligado
+
+**Descoberta:** o painel do incidente agora abre por padrão quando existe investigação, e leva para a lista completa.
+
+**Colisão de rota resolvida:** `/aiops` passou a ser a seção da UI, então o prefixo do backend virou **`/aiopsapi`** (mesma regra do `/keepapi`: prefixo de API nunca sombreia rota de UI). `k8s/06-ingressroutes.yaml` e o runbook atualizados.
+
+Testes: 9 novos no backend (`tests/test_console_api.py`) cobrindo anotação de policy, mutate negado, classe desconhecida fail-closed, gateway fora, e os agregados de stats; suíte **167/167 verde**. No frontend, testes novos para `ToolsClient` e `InvestigationsClient`.
+
+### Proveniência de evidência + config de agentes (2026-08-01)
+
+Auditoria do fluxo ponta a ponta encontrou um problema de integridade sério: **16 das 19 evidências eram stub (dado fabricado) e nada no sistema sinalizava isso**. A hipótese principal de um RCA real citava `[E11]` = `dd_list_events`, Datadog em modo stub, com 0.70 de confidence. Nem o draft, nem a UI, nem o catálogo distinguiam stub de live. Isso é pior que não ter a feature — é confiança injustificada durante um incidente.
+
+**Proveniência ponta a ponta:**
+
+- Gateway expõe `mode` (stub/live) por tool no catálogo; as 19 anotadas via `mode_setting`
+- `evidence.backend` virou coluna indexada (migração 0007). O backfill **não** assume live para linhas antigas — rotular stub como real é exatamente o que a coluna existe para evitar
+- Coordinator resolve do resultado da tool, com o catálogo como fallback; ausência conta como `unknown`, nunca `live`
+- Draft ganhou linha de proveniência e marca cada bullet stub. Sem nenhuma evidência live: *"No live evidence was collected — this analysis rests entirely on demo data and must not be used to make incident decisions."*
+- UI: badge por evidência, banner vermelho/âmbar acima das hipóteses, coluna "Data" em `/aiops/tools`
+
+**Integridade das hipóteses** (`modules/rca/provenance.py`): hipótese sem nenhuma evidência live tem a confidence multiplicada por 0.4 e recebe `⚠️ unverified — stub data only`. Aplicado também ao caminho do **LLM** — o prompt mostra stub e live com o mesmo texto, então o modelo não tem como distinguir. `corroborated`/`caveat` persistidos (migração 0009), senão a API devolveria confidence baixa sem explicação.
+
+**`get_logs` corrigido** — falhava em 100% das investigações. Dois bugs: `_first_pod_name` descartava o namespace (o pod escolhido estava em `cafecafe`, `get_logs` caía no default `"default"`), e escolhia o *primeiro* pod da lista — log de pod saudável é ruído. Agora `_pod_trouble_score` prioriza `waiting` (CrashLoopBackOff) → phase anormal → not-ready → restarts.
+
+**Config de agentes** (`modules/config/`, migração 0008, `GET/PUT /v1/config`, página `/aiops/settings`):
+
+| Configurável | Antes |
+|---|---|
+| LLM provider + modelo | env, exigia redeploy |
+| Caps de budget | ConfigMap, exigia restart |
+| Severidades que disparam investigação | env |
+| Specialists habilitados | não existia |
+
+Credencial **nunca** é armazenada: só o **nome** da env var (`llm_api_key_env`), resolvido do ambiente em tempo de uso. PUT com algo que parece chave (`sk-`, `xox`, `ghp_`, `AKIA`, `Bearer`) → 422. Campos NULL herdam do env, então deployment intocado não muda de comportamento.
+
+<Warning>
+**Vazamento encontrado e corrigido durante a validação:** o corpo 422 padrão do FastAPI ecoa o valor submetido no campo `input` — ou seja, rejeitar a chave não bastava, ela voltava ao cliente e iria parar em logs de acesso. `modules/config/errors.py` redige campos com cara de credencial. Verificado no cluster.
+</Warning>
+
+**DeepSeek habilitado ao vivo.** Modelos `deepseek-v4-flash` e `deepseek-v4-pro` (confirmados via `/models` da conta — são **modelos de raciocínio**: o `content` só vem após o `reasoning_content`, e ambos consomem o mesmo orçamento de completion; com `max_tokens` baixo o `content` volta vazio e o engine degradaria mudo para o fallback). Adicionado `RCA_MAX_TOKENS = 8000` e erro que nomeia a causa via `finish_reason`.
+
+Testes: 204/204 pytest (13 de proveniência, 24 de config), 40/40 jest (5 suítes).
+
+### Realinhamento: o AI plane parou de ser um sistema paralelo (2026-08-02)
+
+Revisão apontou que a seção AIOps virou **outro sistema dentro do sistema**: integrações que não seguem o padrão de `/providers`, e settings/policies em páginas próprias em vez de `/settings`. A crítica estava certa, e a verificação mostrou que era pior — o Keep tem **126 providers** com catálogo, UI de instalação, secret manager, validação de escopo e rotação, incluindo `datadog`, `argocd`, `eks`, `jira`, `slack`, `kubernetes`, `prometheus`, `deepseek`, `anthropic`, `openai`, `gemini`.
+
+Ou seja: foi construída uma **segunda camada de credenciais** para provedores que o Keep já gerencia — violando o princípio escrito no próprio [overview](/aiops/overview): *"Reusar o que existe; implementar apenas o que falta"*.
+
+**Removido:**
+
+| Removido | Substituído por |
+|---|---|
+| `modules/config/crypto.py` (envelope Fernet) | secret manager do Keep |
+| `agent_config.llm_api_key_encrypted` | provider de IA instalado |
+| tabela `config_secret_key` | — |
+| tabela `integration_config` | providers instalados |
+| dependência `cryptography` | — |
+| páginas `/aiops/settings` e `/aiops/policies` | abas em `/settings` |
+
+Migração `0010_drop_parallel_credential_store` (condicional, aplica tanto em bancos que rodaram as revisões retiradas quanto em bancos novos).
+
+**Novo adaptador:** `packages/keep_client/providers.py` lê `GET /providers`, mapeia tipo de provider → integração AIOps e resolve credenciais do secret manager do Keep.
+
+**Mudança conceitual central:** instalar o Datadog em `/providers` é o que liga o specialist de Datadog. Não existe segundo interruptor nem segundo formulário de chave. `mode: live` passou a ser **derivado** de "o provider está instalado".
+
+O que permanece em `agent_config` é só o que o Keep não tem conceito: caps de budget, severidades que disparam investigação e specialists habilitados. `/v1/config/llm-providers` deixou de ser catálogo hardcoded e lista os providers de IA realmente instalados; sem nenhum, a UI aponta para `/providers` em vez de pedir uma chave.
+
+**UI:** `/aiops/integrations` virou read-only (qual provider alimenta quais tools + link de instalação); `AI Agents` e `AI Policies` são abas de `/settings` com deep-link `?selectedTab=`.
+
+228/228 pytest, 58/58 jest.
+
+### IA nativa do Keep habilitada + provider LLM genérico (2026-08-02)
+
+Duas frentes: habilitar as superfícies de IA que já existiam no Keep (que estavam bloqueadas por um flag de env), e tornar o sistema de providers de IA extensível sem código por vendor.
+
+**Superfícies de IA do Keep ligadas.** O flag `OPEN_AI_API_KEY_SET` era puramente env (`OPEN_AI_API_KEY`) e o `/api/copilotkit` instanciava o cliente OpenAI **fixo em `api.openai.com`** — ou seja, mesmo com env setada, uma chave DeepSeek nunca funcionaria. Novo resolvedor `keep-ui/shared/lib/server/getAiProvider.ts`: a credencial vem do **provider de IA instalado no Keep** (o mesmo `/providers` de sempre), com fallback para as envs legadas. Endpoints OpenAI-compatible por tipo (DeepSeek, Gemini, Grok, Anthropic, generic). O flag passa a refletir provider instalado **ou** env — destravando 5 superfícies de uma vez: workflow builder, chat do incidente, resumo do incidente, presets assistidos e teste de step. No `keep-backend`, `OPENAI_API_KEY` + `OPENAI_BASE_URL` no manifesto (o SDK Python honra o base URL — relatórios de incidente também usam o provider).
+
+**Provider genérico OpenAI-compatible** (`keep/providers/openai_compatible_provider/`): `api_url` + `model` + `api_key` opcional. Qualquer vendor OpenAI-shaped — Mistral, Together, Fireworks, Groq, OpenRouter, Azure, vLLM, Ollama, LM Studio, proxy LiteLLM — vira **configuração, não código**. Descoberto automaticamente pelo `providers_factory` (convenção de diretório). Endpoints self-hosted sem credencial usam placeholder key (o SDK exige string não-vazia). `normalizeBaseUrl` no resolvedor completa `/v1` quando o operador cola o host cru.
+
+**`model` configurável na integração.** Os providers de IA eram inconsistentes — só o `anthropic` tinha campo `model`; os outros usavam default hardcoded. Agora `deepseek`, `gemini`, `grok` e `openai` têm campo `model` (opcional) e o `_query` resolve: argumento explícito > modelo da integração > default do vendor. "Qual modelo dentro da integração" é escolha no card do provider, não config em outro lugar.
+
+**Incidente resolvido no caminho:** o `keep-backend` rodava com SQLite **dentro do container** — o PVC `keep-state` estava comentado. Um rollout anterior apagou o banco inteiro do Keep (providers instalados, incidentes, alertas). Corrigido na raiz: PVC habilitado, `/state` montado, `DATABASE_CONNECTION_STRING=sqlite:////state/keep.db`, `strategy: Recreate` (PVC RWO trava rolling update). Verificado: incidente criado sobrevive a restart do pod.
+
+**Verificado ao vivo:** `OPEN_AI_API_KEY_SET: true`; `/workflows/builder` sem o gate; copilotkit responde `CopilotResponse` válido com threadId (sem 503/500); catálogo com `openai_compatible` (125 providers); DeepSeek reinstalado com `model: deepseek-v4-pro`; `/v1/config/llm-providers` reflete `suggested_model: deepseek/deepseek-v4-pro`.
+
+Testes: 9/9 provider genérico (dentro da imagem keep-api), 62/62 jest, 228/228 pytest keep-aiops.
+
+<Note>
+**Race de startup observado (não corrigido):** uma investigação anterior tinha 19/19 evidence gaps com `PolicyDenied ... fail-closed deny`. Ela rodou 31s **antes** de `seed_default_policies()` inserir a policy global. O comportamento fail-closed está correto, mas um incidente que chega na janela de cold start do `aiops-api` perde toda a evidência de forma silenciosa. Vale endereçar no M4 (seed via migração, ou readiness gate até a policy existir).
+</Note>
+
+### Depois (M4+)
+
+
+
 
 | Entregável | Status |
 |------------|--------|
-| Especialistas multi-agent | `deferred` |
 | Remediação + aprovações | `deferred` |
 | Execução controlada (allowlist de mutate) | `deferred` |
 | Postmortems + loop de aprendizado | `deferred` |
-
-## Mapa do repo / código
 
 | Caminho | Propósito | Existe? |
 |---------|-----------|---------|
@@ -145,19 +329,28 @@ Status possíveis: `not_started` · `in_progress` · `done` · `blocked` · `def
 
 ## Próximas ações (ordenadas)
 
-1. M3: especialistas multi-agent + expansão de MCP servers (ver [milestones](/aiops/roadmap/milestones))
+1. M4: Policy Engine GA + remediation planning (Slack/Keep approve path) — ver [milestones](/aiops/roadmap/milestones)
+1. Fechar o race de cold start do policy seed (ver nota em "Correção de roteamento") — hoje um incidente na janela de startup do `aiops-api` perde toda a evidência
 2. Repetir medição de AC2 em staging real (a atual é compose local)
 3. Eval AC4 com LLM real (LiteLLM) quando houver chave — hoje só caminho determinístico
-4. Opcional: PR upstream do spike de outbox do Keep (fino, ADR-0004); JWT bearer no aiops-api (hoje só API key)
+4. JWT bearer no aiops-api (hoje só API key)
+5. Opcional: PR upstream do spike de outbox do Keep (fino, ADR-0004)
 
 ## Histórico de alterações
 
 | Data | Alteração |
 |------|-----------|
-| 2026-07-27 | Baseline de docs criada; plano adotado; STATUS de handoff criado; código não iniciado |
 | 2026-07-27 | ADR-0007: stack de agents = orquestrador LangGraph + LiteLLM + MCP Gateway; não LangChain clássico |
 | 2026-07-29 | **M0 concluído**: contrato de event envelope (+exemplos), spike de outbox/webhook no Keep, scaffold `keep-aiops`, keep-client, stub do MCP Gateway (K8s read), FSM do orquestrador, writeback na timeline, runbook de compose; todos os critérios de saída verificados ao vivo. Correção de contrato: `name` opcional (Keep permite incidentes sem nome) |
 | 2026-07-29 | RFC-0001 (inventário de capacidades) aberta para comentários; docs vivos traduzidos para português |
 | 2026-07-29 | **M1 concluído**: Postgres+alembic (0001/0002), auth de tenant via Keep `/whoami`, policies persistidas + API, Helm chart, métricas/dashboards/alertas; 72/72 testes verdes; e2e ao vivo com Postgres |
 | 2026-07-30 | Repo migrado para Bitbucket `acertodevs/acerto-keep` (origin); upstream Keep como remote `upstream`. **M2 módulos implementados**: context builder, knowledge RAG, RCA writer (LLM+fallback), painel de investigação na UI, eval harness golden set. **Human feedback end-to-end**: `modules/feedback/` + migração 0006 + métrica + thumbs up/down na UI; suítes 132/132 backend e 15/15 UI verdes. Falta apenas o aceite e2e AC1–AC7 |
 | 2026-07-30 | **M2 concluído**: aceite e2e AC1–AC7 verificado ao vivo em docker compose (checklist acima). Correção feita durante o aceite: spans OTel de tool calls MCP e knowledge retrieve agora carregam `investigation_id` (AC7) |
+| 2026-08-01 | **M3 K3s ao vivo**: cluster K3D `cuda-cluster` recebe o stack (k8s/00-04) com `MCP_K8S_MODE=live` + ServiceAccount `keep-mcp` (read-only) lendo o cluster real. Cloudflare tunnel `*.clazar.net` resolve `keeply.clazar.net` para o Traefik do cluster (entrypoint `web`); IngressRoute com `stripPrefix` middleware para `/mcp` e `/aiops`. E2E via tunnel: `POST /incidents` → `rca_ready` (~5s) com evidência mista (2 live K8s, 16 stub, 1 gap); `aiops.*` no Keep incident. Cost budget: `AIOPS_BUDGET_MAX_TOOL_CALLS=1` → `failed` com `error="BudgetExceeded(tool_calls): tool_calls=2 > limit=1"`, métrica `keep_aiops_investigation_cost_exceeded_total{kind="tool_calls"} 1.0` em `/aiops/metrics`. Runbook em `k8s/RUNBOOK.md` cobre build, import, deploy, IngressRoute, e2e, budget. Helm chart `keep-aiops/deploy/helm/keep-aiops/` permanece como alternativa production-leaning |
+
+| 2026-08-02 | **IA nativa do Keep habilitada + provider LLM genérico**: `getAiProvider.ts` resolve credencial do provider de IA instalado (flag `OPEN_AI_API_KEY_SET` passa a refletir provider, não só env); copilotkit deixa de ser fixo em api.openai.com. Novo provider `openai_compatible` (api_url + model + api_key opcional) — qualquer vendor OpenAI-shaped vira configuração, não código. Campo `model` configurável em deepseek/gemini/grok/openai com resolução arg > integração > default. **Bug grave resolvido no caminho**: keep-backend sem PVC apagava o banco a cada rollout; PVC `keep-state` + `strategy: Recreate`. Verificado ao vivo: builder sem gate, copilotkit respondendo, DeepSeek com model configurado |
+| 2026-08-01 | **Proveniência de evidência + config de agentes**: auditoria achou 16/19 evidências stub sem nenhuma sinalização, com hipótese a 0.70 de confidence citando dado fabricado. `evidence.backend` (migração 0007) + `mode` no catálogo do gateway + badges/banner na UI + linha de proveniência no draft. Hipótese sem evidência live: confidence ×0.4 e `⚠️ unverified` (aplicado também ao caminho do LLM); `corroborated`/`caveat` persistidos (migração 0009). `get_logs` corrigido — falhava em 100% das runs por descartar o namespace, e escolhia o primeiro pod em vez do mais problemático. Config de agentes (migração 0008, `/v1/config`, `/aiops/settings`): LLM provider/modelo, caps de budget, severidades e specialists, tudo em runtime; credencial só por **nome** de env var. Vazamento corrigido: o 422 do FastAPI ecoava a chave submetida. DeepSeek `deepseek-v4-pro` habilitado ao vivo. 204/204 pytest, 40/40 jest |
+| 2026-08-01 | **Correção do redirect para `localhost:3000`**: o patch de build que forçava `isAuthenticated=true` em NO_AUTH pulava `/signin`, onde o provider `NoAuth` cria a sessão; sem accessToken todo fetch para `/backend/*` dava 401 → `ApiClient` chamava `signOutClient()` → fallback hardcoded do Auth.js (`http://localhost:3000/api/auth`). Patch removido do `middleware.ts` e do `build-patches.sh`. Dois bugs de build corrigidos junto: `&` não escapado no `sed` corrompia o `middleware.ts`, e `NODE_ENV=production` antes do `npm install` omitia as devDependencies do toolchain de build. `NEXTAUTH_URL`/`AUTH_URL`/`AUTH_TRUST_HOST` adicionados. Verificado: signin emite sessão com accessToken, `/backend/*` em 200, 15/15 seções da UI em 200 |
+| 2026-08-01 | **Correção de roteamento do frontend no K3D**: os `IngressRoute` dividiam `keeply.clazar.net` por path entre Next.js e keep-api com conjuntos colidentes — `/` caía em JSON cru, `/backend/*` (todo fetch client-side) dava 404 e 10 das 15 seções da UI dava 404. Novo modelo em `k8s/06-ingressroutes.yaml`: frontend catch-all + prefixos dedicados (`/keepapi`, `/aiops`, `/mcp`, `/ws`) com `stripPrefix`. Também: `PUSHER_HOST` relativo (`/ws`), `05-frontend.yaml` sincronizado com o cluster (`keep-ui:keeply`), `04-ingress.yaml` removido, IngressRoutes versionados (antes viviam em `/tmp`). Verificado ao vivo: 15/15 seções 200 HTML, websocket 101, e2e `rca_ready` com 18/19 tools |
+| 2026-08-01 | **M3 concluído**: coordinator (`aiops_api/modules/specialists/coordinator.py`) + 10 specialists (k8s, prometheus, datadog, aws_eks, aws_rds, argocd, jira, slack, bitbucket, backstage). Per-investigation cost budget: `Budget` + `BudgetTracker` + métricas `keep_aiops_investigation_cost_total{kind}` / `keep_aiops_investigation_cost_exceeded_total{kind}`; cap configurável via `AIOPS_BUDGET_MAX_TOOL_CALLS` / `AIOPS_BUDGET_MAX_WALL_TIME_SECONDS` / `AIOPS_BUDGET_MAX_LLM_TOKENS`; breach → `BudgetExceeded` → `failed`. LLM tokens contabilizados em `rca/engine._call_llm`. 8 novos MCP read tools (Datadog, EKS, RDS, ArgoCD, Jira, Slack, Bitbucket, Backstage) com stub + live; 19 tools no catálogo. Shared `BackendUnavailable` → 503 mapping. Runbook §9 com smoke do catálogo + budget. Suíte 158/158 pytest verde. Compatível com M0/M2 (refactor preserva a demo path com 3 tools K8s) |
+

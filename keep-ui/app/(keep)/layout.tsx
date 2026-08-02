@@ -5,6 +5,7 @@ import { ToastContainer } from "react-toastify";
 import Navbar from "components/navbar/Navbar";
 import { TopologyPollingContextProvider } from "@/app/(keep)/topology/model/TopologyPollingContext";
 import { getConfig } from "@/shared/lib/server/getConfig";
+import { isAiEnabled } from "@/shared/lib/server/getAiProvider";
 import { ConfigProvider } from "../config-provider";
 import { PHProvider } from "../posthog-provider";
 import ReadOnlyBanner from "@/components/banners/read-only-banner";
@@ -26,8 +27,17 @@ type RootLayoutProps = {
 };
 
 export default async function RootLayout({ children }: RootLayoutProps) {
-  const config = getConfig();
+  const baseConfig = getConfig();
   const session = await auth();
+
+  // The AI feature flag reflects an installed Keep AI provider as well as
+  // the legacy env vars, so installing DeepSeek/Anthropic/OpenAI under
+  // Providers is enough to light up the workflow assistant, the incident
+  // chat and the AI-assisted preset fields.
+  const config = {
+    ...baseConfig,
+    OPEN_AI_API_KEY_SET: baseConfig.OPEN_AI_API_KEY_SET || (await isAiEnabled()),
+  };
 
   return (
     <html lang="en" className={`bg-gray-50 ${mulish.className}`}>

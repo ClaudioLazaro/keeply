@@ -18,6 +18,15 @@ class GrokProviderAuthConfig:
             "sensitive": True,
         },
     )
+    model: str | None = dataclasses.field(
+        metadata={
+            "required": False,
+            "description": "Model to use by default",
+            "hint": "grok-2-latest",
+            "sensitive": False,
+        },
+        default=None,
+    )
 
 
 class GrokProvider(BaseProvider):
@@ -45,10 +54,11 @@ class GrokProvider(BaseProvider):
     def _query(
         self,
         prompt,
-        model="grok-1",
+        model=None,
         max_tokens=1024,
         structured_output_format=None,
     ):
+        model = model or self.authentication_config.model or "grok-1"
         headers = {
             "Authorization": f"Bearer {self.authentication_config.api_key}",
             "Content-Type": "application/json"

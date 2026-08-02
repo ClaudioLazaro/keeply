@@ -18,6 +18,15 @@ class DeepseekProviderAuthConfig:
             "sensitive": True,
         },
     )
+    model: str | None = dataclasses.field(
+        metadata={
+            "required": False,
+            "description": "Model to use by default",
+            "hint": "deepseek-v4-flash",
+            "sensitive": False,
+        },
+        default=None,
+    )
 
 
 class DeepseekProvider(BaseProvider):
@@ -45,7 +54,7 @@ class DeepseekProvider(BaseProvider):
     def _query(
         self,
         prompt,
-        model="deepseek-reasoner",
+        model=None,
         max_tokens=1024,
         system_prompt=None,
         structured_output_format=None,
@@ -73,6 +82,8 @@ class DeepseekProvider(BaseProvider):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+
+        model = model or self.authentication_config.model or "deepseek-reasoner"
 
         response = client.chat.completions.create(
             model=model,

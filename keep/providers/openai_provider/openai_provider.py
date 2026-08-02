@@ -26,6 +26,15 @@ class OpenaiProviderAuthConfig:
         },
         default=None,
     )
+    model: str | None = dataclasses.field(
+        metadata={
+            "required": False,
+            "description": "Model to use by default",
+            "hint": "gpt-4o",
+            "sensitive": False,
+        },
+        default=None,
+    )
 
 
 class OpenaiProvider(BaseProvider):
@@ -52,7 +61,7 @@ class OpenaiProvider(BaseProvider):
     def _query(
         self,
         prompt,
-        model="gpt-3.5-turbo",
+        model=None,
         max_tokens=1024,
         structured_output_format=None,
     ):
@@ -60,6 +69,7 @@ class OpenaiProvider(BaseProvider):
             api_key=self.authentication_config.api_key,
             organization=self.authentication_config.organization_id,
         )
+        model = model or self.authentication_config.model or "gpt-3.5-turbo"
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
