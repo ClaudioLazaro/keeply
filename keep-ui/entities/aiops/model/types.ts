@@ -87,6 +87,8 @@ export interface AgentConfig {
   budget_max_tool_calls: number;
   budget_max_wall_time_seconds: number;
   budget_max_llm_tokens: number;
+  context_timeline_limit: number;
+  llm_embedding_model: string | null;
   auto_investigate_severities: string[];
   disabled_specialists: string[];
   available_specialists: string[];
@@ -101,6 +103,8 @@ export interface AgentConfigUpdate {
   budget_max_tool_calls?: number | null;
   budget_max_wall_time_seconds?: number | null;
   budget_max_llm_tokens?: number | null;
+  context_timeline_limit?: number | null;
+  llm_embedding_model?: string | null;
   auto_investigate_severities?: string[] | null;
   disabled_specialists?: string[] | null;
 }

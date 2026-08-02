@@ -29,6 +29,8 @@ const CONFIG: AgentConfig = {
   budget_max_tool_calls: 50,
   budget_max_wall_time_seconds: 120,
   budget_max_llm_tokens: 200000,
+  context_timeline_limit: 50,
+  llm_embedding_model: null,
   auto_investigate_severities: ["critical", "high"],
   disabled_specialists: [],
   available_specialists: ["kubernetes", "prometheus", "datadog"],

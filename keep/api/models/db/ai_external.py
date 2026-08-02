@@ -78,7 +78,70 @@ analyzing the alert feed and making decisions for each incoming alert.""",
     ),
 )
 
-EXTERNAL_AIS = [external_ai_transformers]
+# Keeply's own correlation algorithm, served by the AIOps control plane
+# (keep-aiops) rather than a hosted third party. Same contract as any
+# external AI: Keep reminds it about the tenant, it pulls alerts with the
+# issued back-API key and writes correlations back.
+external_ai_keeply_correlation = ExternalAI(
+    name="Keeply Alert Correlation",
+    description="""Groups related alerts into a single incident instead of leaving one
+incident per alert. Correlates on shared service, arrival window and fingerprint
+similarity, so a service degrading in three ways lands as one incident an operator
+can act on. Runs inside your cluster — alerts never leave it. Every decision is
+recorded with the reason that produced it, so a wrong grouping can be traced and
+undone.""",
+    version=1,
+    # Served by the AIOps control plane shipped alongside Keep, so there is
+    # no URL for an operator to discover — only whether it should run, which
+    # is the "Enabled" setting below. The override exists for deployments
+    # that host the control plane elsewhere.
+    api_url=os.environ.get("KEEP_AIOPS_CORRELATION_URL", "http://aiops-api:8080"),
+    api_key=os.environ.get("KEEP_AIOPS_CORRELATION_API_KEY", "keeply-internal"),
+    config_default=json.dumps(
+        [
+            {
+                "value": False,
+                "type": "bool",
+                "name": "Enabled",
+                "description": "Turn alert correlation on. Off by default: correlation joins alerts into shared incidents automatically, and that should be a deliberate choice rather than something that starts happening after an upgrade.",
+            },
+            {
+                "min": 1,
+                "max": 120,
+                "value": 10,
+                "type": "float",
+                "name": "Correlation Window (minutes)",
+                "description": "Alerts arriving within this window of each other are candidates for the same incident. Too wide and unrelated failures merge; too narrow and a slow cascade splits.",
+            },
+            {
+                "min": 0.1,
+                "max": 1.0,
+                "value": 0.6,
+                "type": "float",
+                "name": "Similarity Threshold",
+                "description": "Minimum similarity between two alerts before they are considered the same underlying problem. Below this they stay separate.",
+            },
+            {
+                "min": 0.5,
+                "max": 1.0,
+                "value": 0.8,
+                "type": "float",
+                "name": "Auto-merge Confidence",
+                "description": "Correlations at or above this confidence are applied automatically. Below it the grouping is recorded as a suggestion on the incident instead of being executed.",
+            },
+            {
+                "min": 1,
+                "max": 50,
+                "value": 20,
+                "type": "int",
+                "name": "Max Alerts Per Incident",
+                "description": "Safety cap. A correlation that would exceed this is left alone — a group that large usually means the rules are too loose, not that one incident has 50 symptoms.",
+            },
+        ]
+    ),
+)
+
+EXTERNAL_AIS = [external_ai_transformers, external_ai_keeply_correlation]
 
 
 class ExternalAIConfigAndMetadata(SQLModel, table=True):

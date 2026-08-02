@@ -285,6 +285,33 @@ export function AgentSettingsTab() {
       </Section>
 
       <Section
+        title="Context & knowledge"
+        description="How much incident history the agents read, and how runbooks are matched."
+      >
+        <Field
+          label="Timeline entries in the context pack"
+          hint="More history gives the RCA more to work with and costs more tokens."
+        >
+          <NumberInput
+            value={value("context_timeline_limit", config.context_timeline_limit)}
+            onValueChange={(next: number) => set("context_timeline_limit", next)}
+            min={1}
+            max={1000}
+          />
+        </Field>
+        <Field
+          label="Embedding model"
+          hint="Leave empty to match runbooks by keyword — that works with no model at all."
+        >
+          <TextInput
+            value={value("llm_embedding_model", config.llm_embedding_model ?? "")}
+            onValueChange={(next: string) => set("llm_embedding_model", next)}
+            placeholder="(keyword matching)"
+          />
+        </Field>
+      </Section>
+
+      <Section
         title="Auto-investigation"
         description="Incident severities that automatically start an investigation."
       >

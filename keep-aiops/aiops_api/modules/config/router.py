@@ -52,6 +52,8 @@ class AgentConfigUpdate(BaseModel):
     budget_max_tool_calls: int | None = Field(default=None, ge=1, le=10_000)
     budget_max_wall_time_seconds: float | None = Field(default=None, ge=1, le=3600)
     budget_max_llm_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    context_timeline_limit: int | None = Field(default=None, ge=1, le=1000)
+    llm_embedding_model: str | None = None
     auto_investigate_severities: list[str] | None = None
     disabled_specialists: list[str] | None = None
 
@@ -114,6 +116,8 @@ class AgentConfigResponse(BaseModel):
     budget_max_tool_calls: int
     budget_max_wall_time_seconds: float
     budget_max_llm_tokens: int
+    context_timeline_limit: int
+    llm_embedding_model: str | None
     auto_investigate_severities: list[str]
     disabled_specialists: list[str]
     available_specialists: list[str]
@@ -135,6 +139,8 @@ def _response(tenant_id: str) -> AgentConfigResponse:
         budget_max_tool_calls=config.budget_max_tool_calls,
         budget_max_wall_time_seconds=config.budget_max_wall_time_seconds,
         budget_max_llm_tokens=config.budget_max_llm_tokens,
+        context_timeline_limit=config.context_timeline_limit,
+        llm_embedding_model=config.llm_embedding_model,
         auto_investigate_severities=config.auto_investigate_severities,
         disabled_specialists=config.disabled_specialists,
         available_specialists=sorted(spec.name for spec in default_specialists()),

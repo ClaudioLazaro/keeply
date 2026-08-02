@@ -40,6 +40,8 @@ class EffectiveConfig:
     budget_max_tool_calls: int
     budget_max_wall_time_seconds: float
     budget_max_llm_tokens: int
+    context_timeline_limit: int
+    llm_embedding_model: str | None
     auto_investigate_severities: list[str] = field(default_factory=list)
     disabled_specialists: list[str] = field(default_factory=list)
 
@@ -115,6 +117,8 @@ def _build(row: AgentConfig | None, settings: Settings) -> EffectiveConfig:
         budget_max_tool_calls=merged["budget_max_tool_calls"],
         budget_max_wall_time_seconds=merged["budget_max_wall_time_seconds"],
         budget_max_llm_tokens=merged["budget_max_llm_tokens"],
+        context_timeline_limit=merged["context_timeline_limit"],
+        llm_embedding_model=merged["llm_embedding_model"],
         auto_investigate_severities=list(merged["auto_investigate_severities"]),
         disabled_specialists=list(merged["disabled_specialists"]),
     )

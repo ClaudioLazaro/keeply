@@ -56,6 +56,13 @@ class AgentConfig(SQLModel, table=True):
     budget_max_wall_time_seconds: float | None = None
     budget_max_llm_tokens: int | None = None
 
+    # --- Context & knowledge ----------------------------------------------
+    # How many timeline entries the context pack carries into the RCA.
+    context_timeline_limit: int | None = None
+    # Embedding model for knowledge retrieval; empty falls back to keyword
+    # matching, which works without any model at all.
+    llm_embedding_model: str | None = None
+
     # --- Orchestration ----------------------------------------------------
     # Incident severities that auto-start an investigation.
     auto_investigate_severities: list[str] | None = Field(default=None, sa_column=Column(JSON))
@@ -86,6 +93,16 @@ class AgentConfig(SQLModel, table=True):
                 self.budget_max_llm_tokens
                 if self.budget_max_llm_tokens is not None
                 else settings.budget_max_llm_tokens
+            ),
+            "context_timeline_limit": (
+                self.context_timeline_limit
+                if self.context_timeline_limit is not None
+                else settings.context_timeline_limit
+            ),
+            "llm_embedding_model": (
+                self.llm_embedding_model
+                if self.llm_embedding_model is not None
+                else (settings.llm_embedding_model or None)
             ),
             "auto_investigate_severities": (
                 self.auto_investigate_severities

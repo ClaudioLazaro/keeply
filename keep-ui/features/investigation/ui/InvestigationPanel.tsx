@@ -1,9 +1,7 @@
 "use client";
 
-import { Disclosure } from "@headlessui/react";
 import { Badge, Callout, Card } from "@tremor/react";
 import {
-  IoChevronDown,
   IoThumbsDown,
   IoThumbsDownOutline,
   IoThumbsUp,
@@ -246,63 +244,52 @@ function InvestigationPanelBody({
   );
 }
 
+/**
+ * The AI Investigation tab of an incident.
+ *
+ * Rendered as a peer of Alerts / Activity / Timeline / Topology / Workflows
+ * rather than a collapsible card in the header: an operator looks for
+ * incident detail in the tab strip, and the RCA is detail, not chrome.
+ */
 export function InvestigationPanel({ incidentId }: InvestigationPanelProps) {
   const { investigation, error, isLoading } =
     useInvestigationByIncident(incidentId);
 
   return (
-    <Card className="mt-2 !p-4">
-      {/* Open by default once there is something to show. Collapsed-by-default
-          made the panel invisible in practice — it read as a bare heading. */}
-      <Disclosure as="div" defaultOpen={!!investigation}>
-        <Disclosure.Button
-          className="flex w-full items-center justify-between gap-2"
-          data-testid="investigation-panel-toggle"
+    <Card className="!p-4" data-testid="investigation-panel">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <span className="flex items-center gap-2">
+          <h4 className="text-tremor-content-strong font-medium">
+            AI Investigation
+          </h4>
+          {investigation && (
+            <InvestigationStatusBadge status={investigation.status} />
+          )}
+        </span>
+        <a
+          href="/aiops/investigations"
+          className="text-xs text-orange-600 hover:underline"
         >
-          {({ open }) => (
-            <>
-              <span className="flex items-center gap-2">
-                <h4 className="text-tremor-content-strong font-medium">
-                  AI Investigation
-                </h4>
-                {investigation && (
-                  <InvestigationStatusBadge status={investigation.status} />
-                )}
-              </span>
-              <IoChevronDown
-                className={clsx({ "rotate-180": open }, "text-slate-400")}
-              />
-            </>
-          )}
-        </Disclosure.Button>
+          All investigations →
+        </a>
+      </div>
 
-        <Disclosure.Panel as="div" className="relative">
-          {error ? (
-            <p className="text-tremor-content text-sm pt-3">
-              Investigation data is unavailable.
-            </p>
-          ) : isLoading ? (
-            <p className="text-tremor-content text-sm pt-3">
-              Loading investigation…
-            </p>
-          ) : investigation ? (
-            <>
-              <InvestigationPanelBody investigation={investigation} />
-              <a
-                href="/aiops/investigations"
-                className="text-xs text-orange-600 hover:underline mt-3 inline-block"
-              >
-                All investigations →
-              </a>
-            </>
-          ) : (
-            <p className="text-tremor-content text-sm pt-3">
-              No investigation found for this incident. One is created
-              automatically for critical and high-severity incidents.
-            </p>
-          )}
-        </Disclosure.Panel>
-      </Disclosure>
+      {error ? (
+        <p className="text-tremor-content text-sm pt-3">
+          Investigation data is unavailable.
+        </p>
+      ) : isLoading ? (
+        <p className="text-tremor-content text-sm pt-3">
+          Loading investigation…
+        </p>
+      ) : investigation ? (
+        <InvestigationPanelBody investigation={investigation} />
+      ) : (
+        <p className="text-tremor-content text-sm pt-3">
+          No investigation found for this incident. One is created
+          automatically for critical and high-severity incidents.
+        </p>
+      )}
     </Card>
   );
 }

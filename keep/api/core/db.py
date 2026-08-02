@@ -5516,14 +5516,31 @@ def get_or_create_external_ai_settings(
                 ExternalAIConfigAndMetadata.tenant_id == tenant_id
             )
         ).all()
-        if len(algorithm_configs) == 0:
-            if os.environ.get("KEEP_EXTERNAL_AI_TRANSFORMERS_URL") is not None:
-                algorithm_config = ExternalAIConfigAndMetadata.from_external_ai(
-                    tenant_id=tenant_id, algorithm=external_ai_transformers
+        # Create a config row for every registered algorithm that is
+        # actually reachable. Previously this was hardcoded to the
+        # transformers plugin, so a second algorithm could never appear on
+        # the AI page no matter how it was configured.
+        existing_ids = {config.algorithm_id for config in algorithm_configs}
+        created = False
+        for algorithm in EXTERNAL_AIS:
+            if algorithm.unique_id in existing_ids:
+                continue
+            if algorithm.api_url is None:
+                # Not configured for this deployment — nothing to show.
+                continue
+            session.add(
+                ExternalAIConfigAndMetadata.from_external_ai(
+                    tenant_id=tenant_id, algorithm=algorithm
                 )
-                session.add(algorithm_config)
-                session.commit()
-                algorithm_configs = [algorithm_config]
+            )
+            created = True
+        if created:
+            session.commit()
+            algorithm_configs = session.exec(
+                select(ExternalAIConfigAndMetadata).where(
+                    ExternalAIConfigAndMetadata.tenant_id == tenant_id
+                )
+            ).all()
         return [
             ExternalAIConfigAndMetadataDto.from_orm(algorithm_config)
             for algorithm_config in algorithm_configs

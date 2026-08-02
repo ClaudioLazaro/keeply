@@ -57,6 +57,10 @@ data:
   # Outbox spike (ADR-0004) — webhook to aiops-api for domain events
   KEEP_DOMAIN_EVENTS_ENABLED: "true"
   KEEP_DOMAIN_EVENTS_WEBHOOK_URL: "http://aiops-api:8080/v1/events/keep"
+  # Where the Keeply Alert Correlation plugin is served. This is
+  # infrastructure (how to reach the control plane), not configuration:
+  # whether correlation runs is the "Enabled" toggle on the AI page.
+  KEEP_AIOPS_CORRELATION_URL: "http://aiops-api:8080"
   # SQLite path is /state/keep.db (the keep-api image persists there)
 ---
 apiVersion: v1

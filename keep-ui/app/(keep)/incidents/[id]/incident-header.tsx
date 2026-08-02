@@ -20,7 +20,6 @@ import { CopilotKit } from "@copilotkit/react-core";
 import { TbInfoCircle, TbTopologyStar3 } from "react-icons/tb";
 import { useConfig } from "@/utils/hooks/useConfig";
 import { TicketingIncidentOptions } from "./ticketing-incident-options";
-import { InvestigationPanel } from "@/features/investigation/ui/InvestigationPanel";
 
 export function IncidentHeader({
   incident: initialIncidentData,
@@ -180,7 +179,6 @@ export function IncidentHeader({
         </div>
       </header>
       <IncidentOverview incident={incident} />
-      <InvestigationPanel incidentId={incident.id} />
       <Modal
         isOpen={isFormOpen}
         onClose={handleCloseForm}

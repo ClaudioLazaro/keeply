@@ -38,7 +38,8 @@ COPY package.json package-lock.json ./
 # tailwind-variants, postcss, postcss-import). Without it `next build`
 # dies with "Cannot find module 'postcss-import'" and
 # "Can't resolve 'tailwind-variants'".
-RUN npm install --include=dev --no-audit --maxsockets 1
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install --include=dev --no-audit --prefer-offline
 COPY . .
 # Drop `output: "standalone"` so the build produces a standard .next
 # that `next start` can run directly.
@@ -64,7 +65,18 @@ ARG NEXTAUTH_URL=https://keeply.clazar.net
 ENV NEXTAUTH_URL=${NEXTAUTH_URL}
 ENV AUTH_URL=${NEXTAUTH_URL}
 ENV AUTH_TRUST_HOST=true
-RUN npm run build
+# Bound the build's footprint. Next spawns one worker per core (28 on
+# this host) and each carries its own heap, which starved the machine
+# and eventually OOM-killed the build. `experimental.cpus` caps the
+# workers; --max-old-space-size caps each heap so the total stays
+# predictable regardless of how many cores the builder sees.
+# next.config.js already has an `experimental` block, so add the key
+# inside it rather than declaring a second one (which JS would silently
+# let win, dropping the turbopack aliases).
+RUN sed -i 's#^  experimental: {#  experimental: {\n    cpus: 4,#' next.config.js
+ENV NODE_OPTIONS=--max-old-space-size=6144
+RUN --mount=type=cache,target=/app/.next/cache,sharing=locked \
+    npm run build
 
 FROM base AS runner
 ARG GIT_COMMIT_HASH=local
