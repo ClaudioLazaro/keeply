@@ -84,12 +84,12 @@ analyzing the alert feed and making decisions for each incoming alert.""",
 # issued back-API key and writes correlations back.
 external_ai_keeply_correlation = ExternalAI(
     name="Keeply Alert Correlation",
-    description="""Groups related alerts into a single incident instead of leaving one
-incident per alert. Correlates on shared service, arrival window and fingerprint
-similarity, so a service degrading in three ways lands as one incident an operator
-can act on. Runs inside your cluster — alerts never leave it. Every decision is
-recorded with the reason that produced it, so a wrong grouping can be traced and
-undone.""",
+    description="""Watches your alert history for groupings that keep recurring and proposes them as
+correlation rules for review. Keep's own rules engine then executes them on the
+ingestion path, with the approval gating, auto-resolution and naming it already
+provides — so there is exactly one thing creating incidents. This only answers the
+question the engine cannot: which rule to write. Runs inside your cluster and
+never creates or modifies an incident itself.""",
     version=1,
     # Served by the AIOps control plane shipped alongside Keep, so there is
     # no URL for an operator to discover — only whether it should run, which
@@ -122,12 +122,12 @@ undone.""",
                 "description": "Minimum similarity between two alerts before they are considered the same underlying problem. Below this they stay separate.",
             },
             {
-                "min": 0.5,
-                "max": 1.0,
-                "value": 0.8,
-                "type": "float",
-                "name": "Auto-merge Confidence",
-                "description": "Correlations at or above this confidence are applied automatically. Below it the grouping is recorded as a suggestion on the incident instead of being executed.",
+                "min": 1,
+                "max": 10,
+                "value": 2,
+                "type": "int",
+                "name": "Minimum Occurrences",
+                "description": "How many times a pattern must recur before it is proposed as a rule. One grouping is a coincidence; a rule should describe something that keeps happening.",
             },
             {
                 "min": 1,

@@ -175,6 +175,17 @@ spec:
                   optional: true
             - name: OPENAI_BASE_URL
               value: "https://api.deepseek.com"
+            # Provider credentials and system API keys live here. The
+            # default is "./" — the container filesystem — so a rollout
+            # left every secret's DB row pointing at a file that no longer
+            # existed, and reading it 500'd. Must be on the PVC.
+            - name: SECRET_MANAGER_DIRECTORY
+              value: "/state/secrets"
+            # How Keep refers to itself when handing a callback URL to an
+            # external AI plugin. Unset it defaults to 0.0.0.0, which the
+            # plugin cannot call back on.
+            - name: KEEP_API_URL
+              value: "http://keep-backend:8080"
             - name: AUTH_TYPE
               value: "NO_AUTH"
             - name: KEEP_METRICS

@@ -152,6 +152,84 @@ async def create_rule(
     return rule
 
 
+class RuleFromCelDto(BaseModel):
+    """Create a rule from a CEL expression alone.
+
+    The regular create endpoint expects the caller to supply the SQL form
+    too, which the web UI derives from its query builder. Programmatic
+    callers (the correlation suggester) only have CEL, and re-implementing
+    the conversion outside Keep would mean two dialects of the same
+    translation drifting apart. Keep already owns that translation, so it
+    happens here.
+    """
+
+    ruleName: str
+    celQuery: str
+    timeframeInSeconds: int = 600
+    timeUnit: str = "seconds"
+    groupingCriteria: list[str] = []
+    requireApprove: bool = True
+    createOn: str = "any"
+    resolveOn: str = "never"
+    incidentNameTemplate: str | None = None
+    groupDescription: str | None = None
+
+
+@router.post(
+    "/from-cel",
+    description="Create a rule from a CEL expression, deriving the SQL form",
+)
+async def create_rule_from_cel(
+    body: RuleFromCelDto,
+    authenticated_entity: AuthenticatedEntity = Depends(
+        IdentityManagerFactory.get_auth_verifier(["write:rules"])
+    ),
+):
+    from keep.api.core.alerts import properties_metadata
+    from keep.api.core.cel_to_sql.sql_providers.get_cel_to_sql_provider_for_dialect import (
+        get_cel_to_sql_provider,
+    )
+
+    if not body.celQuery:
+        raise HTTPException(status_code=400, detail="CEL is required")
+    if not body.ruleName:
+        raise HTTPException(status_code=400, detail="Rule name is required")
+
+    try:
+        sql = get_cel_to_sql_provider(properties_metadata).convert_to_sql_str(
+            body.celQuery
+        )
+    except Exception as exc:
+        # A CEL expression Keep cannot translate would create a rule that
+        # never matches; refuse it rather than storing something inert.
+        raise HTTPException(
+            status_code=400, detail=f"Invalid CEL expression: {exc}"
+        ) from exc
+
+    rule = create_rule_db(
+        tenant_id=authenticated_entity.tenant_id,
+        name=body.ruleName,
+        timeframe=body.timeframeInSeconds,
+        timeunit=body.timeUnit,
+        definition={"sql": sql, "params": {}},
+        definition_cel=body.celQuery,
+        created_by=authenticated_entity.email,
+        grouping_criteria=body.groupingCriteria,
+        group_description=body.groupDescription,
+        require_approve=body.requireApprove,
+        resolve_on=body.resolveOn,
+        create_on=body.createOn,
+        incident_name_template=body.incidentNameTemplate,
+        incident_prefix=None,
+        multi_level=False,
+        multi_level_property_name=None,
+        threshold=1,
+        assignee=None,
+    )
+    logger.info("Rule created from CEL", extra={"rule_id": str(rule.id)})
+    return rule
+
+
 @router.delete(
     "/{rule_id}",
     description="Delete Rule",

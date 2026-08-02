@@ -8,13 +8,13 @@ return immediately and do the work in the background.
 import logging
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from aiops_api.db import get_engine
 from aiops_api.modules.correlation import service
-from aiops_api.modules.correlation.models import CorrelationDecision
+from aiops_api.modules.correlation.models import RuleSuggestion
 
 logger = logging.getLogger(__name__)
 
@@ -60,29 +60,57 @@ def _run_safely(tenant_id: str) -> None:
         logger.exception("correlation run failed", extra={"tenant_id": tenant_id})
 
 
-@router.get("/v1/correlation/decisions")
-def list_decisions(limit: int = 50) -> list[dict[str, Any]]:
-    """Audit trail — what was correlated, how sure, and on what evidence.
+@router.get("/v1/correlation/suggestions")
+def list_suggestions(status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    """Rule proposals waiting on a decision.
 
-    Auto-merge is destructive; this is how a wrong grouping gets traced
-    back to the signals and settings that produced it.
+    Each carries the evidence behind it — how often the pattern recurred
+    and how many alerts it covered — because a rule an operator cannot
+    justify is a rule they should not accept.
     """
     with Session(get_engine()) as session:
-        decisions = session.exec(
-            select(CorrelationDecision)
-            .order_by(CorrelationDecision.created_at.desc())
-            .limit(min(limit, 500))
-        ).all()
+        query = select(RuleSuggestion).order_by(
+            RuleSuggestion.occurrences.desc(), RuleSuggestion.created_at.desc()
+        )
+        if status:
+            query = query.where(RuleSuggestion.status == status)
+        suggestions = session.exec(query.limit(min(limit, 500))).all()
         return [
             {
-                "id": decision.id,
-                "outcome": decision.outcome,
-                "confidence": decision.confidence,
-                "explanation": decision.explanation,
-                "alert_fingerprints": decision.alert_fingerprints,
-                "incident_id": decision.incident_id,
-                "settings_snapshot": decision.settings_snapshot,
-                "created_at": decision.created_at.isoformat(),
+                "id": s.id,
+                "name": s.name,
+                "cel": s.cel,
+                "grouping_criteria": s.grouping_criteria,
+                "timeframe_seconds": s.timeframe_seconds,
+                "occurrences": s.occurrences,
+                "alerts_covered": s.alerts_covered,
+                "rationale": s.rationale,
+                "status": s.status,
+                "created_rule_id": s.created_rule_id,
+                "created_at": s.created_at.isoformat(),
             }
-            for decision in decisions
+            for s in suggestions
         ]
+
+
+@router.post("/v1/correlation/suggestions/{suggestion_id}:accept")
+def accept(suggestion_id: str) -> dict[str, Any]:
+    """Create the Keep rule this suggestion describes.
+
+    From here on the rule lives in /rules like any other — Keep's engine
+    executes it, and it is edited or deleted there.
+    """
+    try:
+        return service.accept_suggestion(suggestion_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — surface Keep's rejection verbatim
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
+
+
+@router.post("/v1/correlation/suggestions/{suggestion_id}:dismiss")
+def dismiss(suggestion_id: str) -> dict[str, Any]:
+    try:
+        return service.dismiss_suggestion(suggestion_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -219,8 +219,7 @@ def test_alerts_without_a_timestamp_are_ignored_not_guessed():
 
 
 def test_correlation_is_off_until_switched_on():
-    """Automatic incident merging must never begin as a side effect of a
-    deploy — only because someone chose it in the UI."""
+    """Analysis costs API calls against Keep, so it starts only when asked."""
     from aiops_api.modules.correlation.service import DEFAULT_SETTINGS
 
     assert DEFAULT_SETTINGS["Enabled"] is False
@@ -240,7 +239,7 @@ def test_a_disabled_tenant_does_no_work(monkeypatch):
 
     monkeypatch.setattr(service, "fetch_recent_alerts", _should_not_run)
 
-    assert service.run_for_client(client) == {"applied": 0, "suggested": 0, "skipped": 0}
+    assert service.run_for_client(client) == {"groups": 0, "proposed": 0}
 
 
 def test_bool_settings_survive_the_round_trip_from_keep(monkeypatch):
@@ -286,3 +285,116 @@ def test_bool_settings_survive_the_round_trip_from_keep(monkeypatch):
 
     assert settings["Enabled"] is True
     assert settings["Similarity Threshold"] == 0.75
+
+
+# --------------------------------------------------------------------------- #
+# Rule proposals — the algorithm's actual output
+# --------------------------------------------------------------------------- #
+
+
+def _proposals(groups, **kw):
+    from aiops_api.modules.correlation.rules import propose_rules
+
+    params = {"window_minutes": 10, "min_occurrences": 2}
+    params.update(kw)
+    return propose_rules(groups, **params)
+
+
+def test_a_pattern_seen_once_is_not_a_rule():
+    """One grouping is a coincidence. Proposing a rule from it would teach
+    the engine to merge on a fluke."""
+    groups = grouped([alert("5xx", minute=0), alert("latency", minute=1)])
+
+    assert _proposals(groups) == []
+
+
+def test_a_recurring_pattern_becomes_a_proposal():
+    groups = grouped(
+        [alert("5xx", minute=0), alert("latency", minute=1)]
+    ) + grouped(
+        [alert("5xx again", minute=0), alert("latency again", minute=1)]
+    )
+
+    proposals = _proposals(groups)
+
+    assert len(proposals) == 1
+    assert proposals[0].occurrences == 2
+    assert "service == 'payment-api'" in proposals[0].cel
+
+
+def test_proposal_groups_by_service_so_one_rule_is_not_one_incident():
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 2
+
+    proposal = _proposals(groups)[0]
+
+    assert proposal.grouping_criteria == ["service"]
+
+
+def test_timeframe_comes_from_the_configured_window():
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 2
+
+    proposal = _proposals(groups, window_minutes=25)[0]
+
+    assert proposal.timeframe_seconds == 25 * 60
+
+
+def test_proposal_carries_the_evidence_behind_it():
+    """A rule an operator cannot justify is one they should not accept."""
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 3
+
+    proposal = _proposals(groups)[0]
+
+    assert proposal.occurrences == 3
+    assert proposal.alerts_covered == 6
+    assert "Seen 3 times" in proposal.rationale
+
+
+def test_values_that_could_break_out_of_cel_are_refused():
+    """Alert fields carry operator text; a quote in a service name must not
+    produce a malformed — or differently-meaning — expression."""
+    hostile = [
+        alert("a", service="payment' || true || '", minute=0),
+        alert("b", service="payment' || true || '", minute=1),
+    ]
+    groups = grouped(hostile) * 2
+
+    assert _proposals(groups) == []
+
+
+def test_a_group_without_a_dominant_service_produces_no_rule():
+    """Correlating on wording alone would generate a rule that fires on
+    vocabulary — exactly the rule that merges unrelated outages."""
+    mixed = [
+        alert("latency", service="a", minute=0),
+        alert("latency", service="b", minute=1),
+        alert("latency", service="c", minute=2),
+    ]
+    groups = grouped(mixed, similarity_threshold=0.1) * 2
+
+    assert _proposals(groups) == []
+
+
+def test_proposals_are_ordered_by_strength_of_evidence():
+    strong = grouped([alert("a", minute=0), alert("b", minute=1)]) * 4
+    weak = grouped(
+        [
+            alert("x", service="billing-api", minute=0),
+            alert("y", service="billing-api", minute=1),
+        ]
+    ) * 2
+
+    proposals = _proposals(strong + weak)
+
+    assert [p.occurrences for p in proposals] == sorted(
+        [p.occurrences for p in proposals], reverse=True
+    )
+
+
+def test_payload_gates_the_generated_rule_behind_approval():
+    """A generated rule's first incidents are candidates a human confirms."""
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 2
+
+    payload = _proposals(groups)[0].to_payload()
+
+    assert payload["requireApprove"] is True
+    assert payload["celQuery"].startswith("service == ")
