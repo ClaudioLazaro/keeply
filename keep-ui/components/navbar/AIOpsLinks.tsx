@@ -9,10 +9,9 @@ import {
   MdOutlineSpaceDashboard,
   MdOutlineHandyman,
   MdOutlineSettings,
-  MdOutlinePower,
 } from "react-icons/md";
 import clsx from "clsx";
-import { useAiopsStats, useIntegrations } from "@/entities/aiops/model/useAiops";
+import { useAiopsStats, useAiopsTools } from "@/entities/aiops/model/useAiops";
 
 /**
  * AIOps control-plane section.
@@ -24,12 +23,12 @@ import { useAiopsStats, useIntegrations } from "@/entities/aiops/model/useAiops"
  */
 export const AIOpsLinks = () => {
   const { stats } = useAiopsStats();
-  const { integrations } = useIntegrations();
+  const { catalog } = useAiopsTools();
 
-  // Backends still returning demo data — worth a nudge from the sidebar,
+  // Tools still returning demo data — worth a nudge from the sidebar,
   // since evidence from them cannot support a real conclusion.
-  const stubbedCount = integrations
-    ? integrations.filter((item) => item.mode !== "live").length
+  const stubbedCount = catalog
+    ? catalog.tools.filter((tool) => tool.mode !== "live").length
     : undefined;
 
   const inFlight = stats
@@ -77,19 +76,10 @@ export const AIOpsLinks = () => {
           <LinkWithIcon
             href="/aiops/tools"
             icon={MdOutlineHandyman}
+            count={stubbedCount || undefined}
             testId="aiops-tools"
           >
             <Subtitle className="text-xs">Tools</Subtitle>
-          </LinkWithIcon>
-        </li>
-        <li>
-          <LinkWithIcon
-            href="/aiops/integrations"
-            icon={MdOutlinePower}
-            count={stubbedCount || undefined}
-            testId="aiops-integrations"
-          >
-            <Subtitle className="text-xs">Integrations</Subtitle>
           </LinkWithIcon>
         </li>
         <li>

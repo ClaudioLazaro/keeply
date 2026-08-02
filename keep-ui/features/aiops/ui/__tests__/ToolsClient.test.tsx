@@ -11,12 +11,21 @@ jest.mock("swr", () => ({
     mockUseSWR(key, fetcher, config),
 }));
 
-function mockCatalog(catalog: Partial<ToolCatalogResponse> | undefined, extra = {}) {
-  mockUseSWR.mockReturnValue({
-    data: catalog as ToolCatalogResponse | undefined,
-    error: undefined,
-    isLoading: false,
-    ...extra,
+function mockCatalog(
+  catalog: Partial<ToolCatalogResponse> | undefined,
+  extra = {},
+  integrations: unknown[] = []
+) {
+  mockUseSWR.mockImplementation((key: string | null) => {
+    if (typeof key === "string" && key.includes("integrations")) {
+      return { data: integrations, error: undefined, isLoading: false };
+    }
+    return {
+      data: catalog as ToolCatalogResponse | undefined,
+      error: undefined,
+      isLoading: false,
+      ...extra,
+    };
   });
 }
 
@@ -131,4 +140,62 @@ describe("ToolsClient", () => {
       screen.getByText(/Could not load the MCP tool catalog/)
     ).toBeInTheDocument();
   });
+
+  it("shows which Keep provider backs each tool, or an install link", () => {
+    mockCatalog(
+      {
+        gateway_url: "http://mcp-gateway:8090",
+        gateway_available: true,
+        tools: [READ_TOOL],
+        error: null,
+      },
+      {},
+      [
+        {
+          name: "k8s",
+          label: "Kubernetes",
+          mode: "live",
+          tools: ["get_pods"],
+          notes: "",
+          provider: { id: "p1", type: "kubernetes", display_name: "Kubernetes" },
+          provider_types: ["kubernetes"],
+          ambient_credentials: false,
+        },
+      ]
+    );
+
+    render(<ToolsClient />);
+
+    const link = screen.getByText("Kubernetes", { selector: "a" });
+    expect(link).toHaveAttribute("href", "/providers");
+  });
+
+  it("offers the install flow when no provider backs the tool", () => {
+    mockCatalog(
+      {
+        gateway_url: "http://mcp-gateway:8090",
+        gateway_available: true,
+        tools: [READ_TOOL],
+        error: null,
+      },
+      {},
+      [
+        {
+          name: "k8s",
+          label: "Kubernetes",
+          mode: "stub",
+          tools: ["get_pods"],
+          notes: "",
+          provider: null,
+          provider_types: ["kubernetes"],
+          ambient_credentials: false,
+        },
+      ]
+    );
+
+    render(<ToolsClient />);
+
+    expect(screen.getByText(/install kubernetes/)).toBeInTheDocument();
+  });
+
 });
