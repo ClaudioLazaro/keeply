@@ -131,8 +131,18 @@ function swrCallsFor(fragment: string) {
   );
 }
 
+/**
+ * Make sure the panel body is visible.
+ *
+ * The panel opens by default whenever an investigation exists, so a blind
+ * click would COLLAPSE it. Only toggle when it is actually closed —
+ * headlessui reflects that in aria-expanded.
+ */
 function expandPanel() {
-  fireEvent.click(screen.getByTestId("investigation-panel-toggle"));
+  const toggle = screen.getByTestId("investigation-panel-toggle");
+  if (toggle.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(toggle);
+  }
 }
 
 describe("InvestigationPanel", () => {
@@ -144,18 +154,33 @@ describe("InvestigationPanel", () => {
     feedbackData = undefined;
   });
 
-  it("is collapsed by default and expands on click", () => {
+  it("is open by default when an investigation exists", () => {
+    // Collapsed-by-default made the panel read as a bare heading and users
+    // never found it. It now opens as soon as there is something to show.
     render(<InvestigationPanel incidentId={INCIDENT_ID} />);
-
-    expect(
-      screen.queryByText("payment-api pods are CrashLoopBackOff")
-    ).not.toBeInTheDocument();
-
-    expandPanel();
 
     expect(
       screen.getByText("payment-api pods are CrashLoopBackOff")
     ).toBeInTheDocument();
+  });
+
+  it("can still be collapsed", () => {
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+
+    fireEvent.click(screen.getByTestId("investigation-panel-toggle"));
+
+    expect(
+      screen.queryByText("payment-api pods are CrashLoopBackOff")
+    ).not.toBeInTheDocument();
+  });
+
+  it("starts collapsed when there is no investigation to show", () => {
+    byIncidentData = [];
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+
+    expect(
+      screen.getByTestId("investigation-panel-toggle")
+    ).toHaveAttribute("aria-expanded", "false");
   });
 
   it("renders status, evidence, hypotheses and the RCA draft", () => {
@@ -183,7 +208,7 @@ describe("InvestigationPanel", () => {
     expandPanel();
 
     expect(
-      screen.getByText("No investigation found for this incident.")
+      screen.getByText(/No investigation found for this incident\./)
     ).toBeInTheDocument();
   });
 

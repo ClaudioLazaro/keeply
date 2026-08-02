@@ -5,7 +5,8 @@ export type InvestigationStatus =
   | "gathering"
   | "hypothesizing"
   | "rca_ready"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 export interface Investigation {
   id: string;
@@ -24,6 +25,12 @@ export interface InvestigationEvidence {
   investigation_id: string;
   tool: string;
   summary: string;
+  /**
+   * Provenance: "live" = real system, "stub" = canned demo payload,
+   * "gap" = the call failed. Optional because rows written before the
+   * column existed have none.
+   */
+  backend?: "live" | "stub" | "gap" | "unknown";
   created_at: string;
 }
 
@@ -43,8 +50,13 @@ export interface InvestigationHypothesis {
   id: string;
   investigation_id?: string;
   title: string;
+  /** Already discounted server-side when `corroborated` is false. */
   confidence: number;
   supporting_evidence: string[];
   supporting_knowledge: string[];
+  /** False when no live evidence backs this hypothesis. */
+  corroborated?: boolean;
+  /** Why it is unverified, when it is. */
+  caveat?: string;
   created_at?: string;
 }

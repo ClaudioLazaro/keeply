@@ -38,6 +38,14 @@ def create_app() -> FastAPI:
     from aiops_api.modules.auth import TenantAuthMiddleware
 
     app.add_middleware(TenantAuthMiddleware)
+
+    # Rejecting a pasted credential is not enough — the default 422 body
+    # echoes the submitted value straight back to the caller.
+    from fastapi.exceptions import RequestValidationError
+
+    from aiops_api.modules.config.errors import validation_exception_handler
+
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
     setup_metrics(app)
 
     @app.get("/healthz")
@@ -49,17 +57,25 @@ def create_app() -> FastAPI:
         return {"status": "ready", "environment": settings.environment}
 
     # Module routers are registered below as modules land (M0 spike):
+    from aiops_api.modules.config.router import router as config_router
     from aiops_api.modules.event_bridge.router import router as event_bridge_router
+    from aiops_api.modules.integrations.router import router as integrations_router
     from aiops_api.modules.feedback.router import router as feedback_router
     from aiops_api.modules.knowledge.router import router as knowledge_router
     from aiops_api.modules.orchestrator.router import router as orchestrator_router
     from aiops_api.modules.policy.router import router as policy_router
+    from aiops_api.modules.stats.router import router as stats_router
+    from aiops_api.modules.tools.router import router as tools_router
 
+    app.include_router(config_router)
     app.include_router(event_bridge_router)
+    app.include_router(integrations_router)
     app.include_router(feedback_router)
     app.include_router(knowledge_router)
     app.include_router(orchestrator_router)
     app.include_router(policy_router)
+    app.include_router(stats_router)
+    app.include_router(tools_router)
 
     return app
 

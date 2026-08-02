@@ -72,6 +72,21 @@ evidence_gaps = Counter(
     namespace=METRIC_NAMESPACE,
 )
 
+# Per-investigation cost (M3). Tracks tool calls, LLM tokens, and wall-clock
+# seconds consumed by an investigation. Cardinality stays low: only the
+# bounded `kind` label (tool_calls | llm_tokens | wall_time_seconds).
+investigation_cost = Counter(
+    "investigation_cost_total",
+    "Per-investigation resource consumption. Labels: kind (tool_calls, llm_tokens, wall_time_seconds).",
+    labelnames=("kind",),
+    namespace=METRIC_NAMESPACE,
+)
+investigation_cost_exceeded = Counter(
+    "investigation_cost_exceeded_total",
+    "Investigations that failed because a cost budget was exceeded.",
+    labelnames=("kind",),
+    namespace=METRIC_NAMESPACE,
+)
 
 def setup_metrics(app) -> None:
     """Instrument HTTP and expose GET /metrics (unauthenticated scrape endpoint)."""

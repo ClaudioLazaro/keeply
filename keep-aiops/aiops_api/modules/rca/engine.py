@@ -13,6 +13,7 @@ from typing import Any
 
 from aiops_api.modules.rca.draft import build_citations, item_field, item_id, render_draft
 from aiops_api.modules.rca.fallback import deterministic_rca
+from aiops_api.modules.rca.provenance import annotate_hypotheses
 from aiops_api.modules.rca.schemas import LlmRcaResponse
 from aiops_api.settings import Settings, get_settings
 from aiops_api.telemetry import investigation_span
@@ -46,6 +47,12 @@ Rules:
 """
 
 _REF_NORMALIZER = re.compile(r"^\[?\s*([eEkK]\d+)\s*\]?$")
+
+# Ceiling for one RCA completion. Generous on purpose: reasoning models
+# bill their hidden chain-of-thought against the same completion budget,
+# so a tight limit starves the actual JSON answer. The per-investigation
+# token budget (AIOPS_BUDGET_MAX_LLM_TOKENS) is the real cost guard.
+RCA_MAX_TOKENS = 8000
 
 
 def _incident_view(investigation: Any, context_pack: dict | None) -> dict:
@@ -92,29 +99,61 @@ def _llm_user_prompt(
 
 
 def _call_llm(settings: Settings, incident: dict, evidence: list[Any], knowledge: list[Any],
-              citations: dict[str, dict[str, str]]) -> LlmRcaResponse:
-    """One LiteLLM completion round-trip; raises on any failure."""
+              citations: dict[str, dict[str, str]]) -> tuple[LlmRcaResponse, int]:
+    """One LiteLLM completion round-trip; raises on any failure.
+
+    Returns ``(parsed, total_tokens)`` so the orchestrator can charge the
+    per-investigation cost budget. ``total_tokens`` is the LiteLLM
+    ``usage.total_tokens`` when reported, else 0 (the budget treats 0 as
+    free, which is the safe failure mode for unknown providers).
+    """
     import litellm  # lazy: the no-LLM path must not pay the import cost
 
+    # Model/credential come from the effective agent config (persisted row
+    # over env), so changing the provider in the UI takes effect without a
+    # redeploy.
+    from aiops_api.modules.config import get_effective_config
+
+    config = get_effective_config(getattr(incident, "tenant_id", None) or incident.get("tenant_id", "*"))
+
     response = litellm.completion(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key or None,
+        model=config.llm_model or settings.llm_model,
+        api_key=config.llm_api_key or None,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _llm_user_prompt(incident, evidence, knowledge, citations)},
         ],
         temperature=0,
+        # Reasoning models (DeepSeek v4, o-series, …) spend completion
+        # tokens on hidden reasoning BEFORE emitting `content`. Too small a
+        # ceiling and the answer comes back as an empty string with
+        # finish_reason=length, which parses as an LLM failure and silently
+        # degrades to the deterministic fallback.
+        max_tokens=RCA_MAX_TOKENS,
     )
     content = response.choices[0].message.content
     if not isinstance(content, str) or not content.strip():
-        raise ValueError("LLM returned empty content")
+        # Name the likely cause: on a reasoning model this almost always
+        # means the token ceiling was consumed before `content` started.
+        finish_reason = getattr(response.choices[0], "finish_reason", "unknown")
+        raise ValueError(
+            f"LLM returned empty content (finish_reason={finish_reason}); "
+            f"raise RCA_MAX_TOKENS if the model spends tokens on reasoning"
+        )
     text = content.strip()
     if text.startswith("```"):  # tolerate fenced JSON despite instructions
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
     parsed = LlmRcaResponse.model_validate(json.loads(text))
     if not parsed.hypotheses:
         raise ValueError("LLM returned no hypotheses")
-    return parsed
+    total_tokens = 0
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+    except (TypeError, ValueError):  # defensive: provider returned something odd
+        total_tokens = 0
+    return parsed, total_tokens
 
 
 def _resolve_llm_hypotheses(
@@ -162,18 +201,35 @@ def generate_rca(
     citations = build_citations(evidence, knowledge_results)
     incident = _incident_view(investigation, context_pack)
 
+    # The persisted agent config decides whether the LLM path runs at all;
+    # env stays the fallback so an untouched deployment is unchanged.
+    from aiops_api.modules.config import get_effective_config
+
+    agent_config = get_effective_config(investigation.tenant_id)
+    llm_model = agent_config.llm_model or settings.llm_model
+
     with investigation_span(
         investigation.id,
         name="rca.generate",
         tenant_id=investigation.tenant_id,
         incident_id=investigation.incident_id,
-        **{"llm.model": settings.llm_model or "disabled"},
+        **{"llm.model": llm_model or "disabled"},
     ) as span:
-        if settings.llm_model:
+        if llm_model:
             try:
-                parsed = _call_llm(settings, incident, evidence, knowledge_results, citations)
+                parsed, total_tokens = _call_llm(settings, incident, evidence, knowledge_results, citations)
+                # Surface the LLM token cost to the orchestrator so the
+                # per-investigation budget can charge it. Stored under a
+                # key the service layer reads; stripped from the persisted
+                # citation map (the budget tracker already counted it).
+                citations["_llm_total_tokens"] = int(total_tokens or 0)
                 hypotheses = _resolve_llm_hypotheses(parsed, citations)
+                # The LLM cannot tell stub evidence from live — the prompt
+                # shows it the same text either way. Apply the same
+                # corroboration discount the deterministic path applies.
+                hypotheses = annotate_hypotheses(hypotheses, evidence)
                 span.set_attribute("llm.fallback", False)
+                span.set_attribute("llm.total_tokens", int(total_tokens or 0))
                 draft = render_draft(
                     incident=incident,
                     summary=parsed.summary,
@@ -190,7 +246,7 @@ def generate_rca(
                     "LLM RCA failed, using deterministic fallback",
                     extra={
                         "investigation_id": investigation.id,
-                        "llm_model": settings.llm_model,
+                        "llm_model": llm_model,
                         "error": f"{type(exc).__name__}: {exc}",
                     },
                 )

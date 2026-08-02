@@ -28,4 +28,10 @@ class Hypothesis(SQLModel, table=True):
     confidence: float
     supporting_evidence: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     supporting_knowledge: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    # True when at least one live evidence item backs this hypothesis.
+    # `confidence` above is ALREADY discounted when this is False — do not
+    # discount it a second time when rendering.
+    corroborated: bool = True
+    # Human-readable reason the hypothesis is unverified, when it is.
+    caveat: str | None = None
     created_at: datetime = Field(default_factory=_utcnow)

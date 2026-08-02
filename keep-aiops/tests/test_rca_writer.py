@@ -14,14 +14,34 @@ from aiops_api.modules.rca.fallback import deterministic_rca
 from aiops_api.settings import Settings
 from tests.conftest import KEEP_API_URL, TENANT_ID, make_event, post_event
 
+# These fixtures represent evidence read from a real cluster, so they
+# declare backend="live". Without it the provenance guard would (correctly)
+# treat them as unverified and discount every hypothesis built on them.
 OOM_EVIDENCE = [
     SimpleNamespace(
         id="ev-1",
         tool="get_events",
         summary="get_events: 1 events returned",
+        backend="live",
         payload={"result": {"events": [{"reason": "OOMKilled", "message": "container oomkilled"}]}},
     ),
-    SimpleNamespace(id="ev-2", tool="get_pods", summary="get_pods: 1 pods returned", payload={"pods": []}),
+    SimpleNamespace(
+        id="ev-2",
+        tool="get_pods",
+        summary="get_pods: 1 pods returned",
+        backend="live",
+        payload={"pods": []},
+    ),
+]
+
+STUB_OOM_EVIDENCE = [
+    SimpleNamespace(
+        id="ev-stub-1",
+        tool="dd_list_events",
+        summary="dd_list_events: 1 events returned",
+        backend="stub",
+        payload={"result": {"backend": "stub", "events": [{"reason": "OOMKilled"}]}},
+    ),
 ]
 
 OOM_KNOWLEDGE = [

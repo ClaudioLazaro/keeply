@@ -22,37 +22,18 @@ import {
   InvestigationEvidence,
   InvestigationFeedbackRating,
   InvestigationHypothesis,
-  InvestigationStatus,
 } from "@/entities/investigation/model/types";
+import { InvestigationStatusBadge } from "@/entities/investigation/ui/InvestigationStatusBadge";
+import {
+  ProvenanceBadge,
+  ProvenanceSummary,
+  provenanceOf,
+} from "@/entities/investigation/ui/ProvenanceBadge";
 import { useInvestigationFeedback } from "@/entities/investigation/model/useInvestigationFeedback";
 import { useInvestigationFeedbackActions } from "@/entities/investigation/model/useInvestigationActions";
 
 export interface InvestigationPanelProps {
   incidentId: string;
-}
-
-const STATUS_BADGE: Record<
-  InvestigationStatus,
-  { color: string; label: string }
-> = {
-  queued: { color: "gray", label: "Queued" },
-  gathering: { color: "blue", label: "Gathering evidence" },
-  hypothesizing: { color: "violet", label: "Generating hypotheses" },
-  rca_ready: { color: "emerald", label: "RCA ready" },
-  failed: { color: "red", label: "Failed" },
-};
-
-function InvestigationStatusBadge({
-  status,
-}: {
-  status: InvestigationStatus;
-}) {
-  const badge = STATUS_BADGE[status] ?? { color: "gray", label: status };
-  return (
-    <Badge color={badge.color} size="xs">
-      {badge.label}
-    </Badge>
-  );
 }
 
 function formatConfidence(confidence: number): string {
@@ -70,8 +51,9 @@ function EvidenceList({ evidence }: { evidence: InvestigationEvidence[] }) {
   return (
     <ul className="space-y-1">
       {evidence.map((item) => (
-        <li key={item.id} className="text-sm">
-          <span className="font-mono text-xs bg-tremor-background-muted px-1 py-0.5 rounded mr-2">
+        <li key={item.id} className="text-sm flex items-start gap-2">
+          <ProvenanceBadge value={provenanceOf(item)} />
+          <span className="font-mono text-xs bg-tremor-background-muted px-1 py-0.5 rounded">
             {item.tool}
           </span>
           <span className="text-tremor-content-emphasis">{item.summary}</span>
@@ -94,13 +76,22 @@ function HypothesisList({
   return (
     <ul className="space-y-1">
       {hypotheses.map((hypothesis) => (
-        <li key={hypothesis.id} className="text-sm flex items-center gap-2">
+        <li key={hypothesis.id} className="text-sm flex items-center gap-2 flex-wrap">
           <span className="text-tremor-content-emphasis">
             {hypothesis.title}
           </span>
-          <Badge color="orange" size="xs">
+          <Badge
+            color={hypothesis.corroborated === false ? "gray" : "orange"}
+            size="xs"
+          >
             {formatConfidence(hypothesis.confidence)}
           </Badge>
+          {/* Already discounted server-side; the label says why. */}
+          {hypothesis.corroborated === false && (
+            <Badge color="amber" size="xs" tooltip={hypothesis.caveat}>
+              unverified
+            </Badge>
+          )}
         </li>
       ))}
     </ul>
@@ -208,6 +199,9 @@ function InvestigationPanelBody({
         </Callout>
       )}
 
+      {/* Provenance first: it changes how everything below should be read. */}
+      {!evidenceError && <ProvenanceSummary evidence={evidence ?? []} />}
+
       <section>
         <h5 className="text-tremor-content text-sm font-medium mb-1">
           Evidence
@@ -258,7 +252,9 @@ export function InvestigationPanel({ incidentId }: InvestigationPanelProps) {
 
   return (
     <Card className="mt-2 !p-4">
-      <Disclosure as="div">
+      {/* Open by default once there is something to show. Collapsed-by-default
+          made the panel invisible in practice — it read as a bare heading. */}
+      <Disclosure as="div" defaultOpen={!!investigation}>
         <Disclosure.Button
           className="flex w-full items-center justify-between gap-2"
           data-testid="investigation-panel-toggle"
@@ -290,10 +286,19 @@ export function InvestigationPanel({ incidentId }: InvestigationPanelProps) {
               Loading investigation…
             </p>
           ) : investigation ? (
-            <InvestigationPanelBody investigation={investigation} />
+            <>
+              <InvestigationPanelBody investigation={investigation} />
+              <a
+                href="/aiops/investigations"
+                className="text-xs text-orange-600 hover:underline mt-3 inline-block"
+              >
+                All investigations →
+              </a>
+            </>
           ) : (
             <p className="text-tremor-content text-sm pt-3">
-              No investigation found for this incident.
+              No investigation found for this incident. One is created
+              automatically for critical and high-severity incidents.
             </p>
           )}
         </Disclosure.Panel>

@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from aiops_api.modules.rca.draft import build_citations, item_field, item_id, render_draft
+from aiops_api.modules.rca.provenance import annotate_hypotheses
 
 _RULES: tuple[tuple[re.Pattern[str], str, float], ...] = (
     (re.compile(r"oomkilled|crashloopbackoff", re.IGNORECASE), "Container OOMKilled / memory limit", 0.7),
@@ -98,6 +99,8 @@ def deterministic_rca(incident: dict, evidence: list, knowledge: list) -> dict:
     """
     citations = build_citations(evidence, knowledge)
     hypotheses = _resolve_refs(_match_hypotheses(evidence, knowledge), citations)
+    # Discount anything no live evidence backs before it reaches the draft.
+    hypotheses = annotate_hypotheses(hypotheses, evidence)
     draft = render_draft(
         incident=incident,
         summary=None,

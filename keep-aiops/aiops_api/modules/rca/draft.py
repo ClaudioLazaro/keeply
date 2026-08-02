@@ -45,6 +45,24 @@ def default_summary(incident: dict[str, Any], evidence: list[Any], knowledge: li
     )
 
 
+def _provenance_marker(item: Any) -> str:
+    """Inline provenance tag for an evidence bullet.
+
+    Live evidence is unmarked (it is the expected case); anything else is
+    called out so a reader scanning the list can see what is demo data.
+    """
+    from aiops_api.modules.rca.provenance import GAP, LIVE, STUB, evidence_backend
+
+    backend = evidence_backend(item)
+    if backend == LIVE:
+        return ""
+    if backend == STUB:
+        return " _(stub — demo data)_"
+    if backend == GAP:
+        return ""  # the summary already says "evidence gap"
+    return " _(provenance unknown)_"
+
+
 def _format_refs(label: str, refs: list[str]) -> str:
     if not refs:
         return f"{label}: none"
@@ -67,11 +85,15 @@ def render_draft(
     Knowledge references / suggest-only disclaimer. Hypothesis prose is
     noun-phrase only — never imperative remediation verbs.
     """
+    from aiops_api.modules.rca.provenance import describe
+
     lines = [
         "**RCA draft (AI-assisted)**",
         "",
         "## Summary",
         summary or default_summary(incident, evidence, knowledge),
+        "",
+        describe(evidence),
         "",
         "## Hypotheses",
     ]
@@ -82,7 +104,12 @@ def render_draft(
                 _format_refs("knowledge", list(hypothesis.get("knowledge_refs") or [])),
             )
         )
-        lines.append(f"{index}. **{hypothesis['title']}** (confidence: {hypothesis['confidence']:.2f}) — {refs}")
+        caveat = hypothesis.get("caveat")
+        caveat_part = f" ⚠️ _{caveat}_" if caveat else ""
+        lines.append(
+            f"{index}. **{hypothesis['title']}** "
+            f"(confidence: {hypothesis['confidence']:.2f}){caveat_part} — {refs}"
+        )
     if not hypotheses:  # defensive: engine guarantees >= 1
         lines.append("_No hypotheses generated._")
 
@@ -90,7 +117,10 @@ def render_draft(
     evidence_labels = {v: k for k, v in citations.get("evidence", {}).items()}
     for item in evidence:
         marker = evidence_labels.get(item_id(item), "?")
-        lines.append(f"- [{marker}] {item_field(item, 'tool')}: {item_field(item, 'summary')}")
+        lines.append(
+            f"- [{marker}] {item_field(item, 'tool')}: "
+            f"{item_field(item, 'summary')}{_provenance_marker(item)}"
+        )
     if not evidence:
         lines.append("_No evidence gathered._")
 
