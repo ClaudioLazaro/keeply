@@ -154,6 +154,30 @@ describe("InvestigationPanel", () => {
     feedbackData = undefined;
   });
 
+
+  it("hits /api/aiops/v1/ for every investigation request", () => {
+    const requested: string[] = [];
+    const originalFetch = global.fetch;
+    global.fetch = (async (url: RequestInfo | URL) => {
+      requested.push(String(url));
+      return { ok: true, json: async () => [] } as Response;
+    }) as typeof fetch;
+    try {
+      render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+      for (const call of mockUseSWR.mock.calls) {
+        const fetcher = call[1];
+        if (typeof fetcher === "function") fetcher();
+      }
+    } finally {
+      global.fetch = originalFetch;
+    }
+
+    expect(requested.length).toBeGreaterThan(0);
+    for (const url of requested) {
+      expect(url).toMatch(/^\/api\/aiops\/v1\//);
+    }
+  });
+
   it("is open by default when an investigation exists", () => {
     // Collapsed-by-default made the panel read as a bare heading and users
     // never found it. It now opens as soon as there is something to show.
@@ -314,7 +338,7 @@ describe("InvestigationPanel feedback", () => {
 
     await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
     expect(global.fetch).toHaveBeenCalledWith(
-      "/api/aiops/investigations/inv-1/feedback",
+      "/api/aiops/v1/investigations/inv-1/feedback",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ rating: "useful", comment: null }),

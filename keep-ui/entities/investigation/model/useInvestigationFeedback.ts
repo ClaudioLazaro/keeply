@@ -9,7 +9,7 @@ async function aiopsGetFeedback(
   investigationId: string
 ): Promise<InvestigationFeedback | undefined> {
   const response = await fetch(
-    `${AIOPS_PROXY_BASE_PATH}/investigations/${encodeURIComponent(
+    `${AIOPS_PROXY_BASE_PATH}/v1/investigations/${encodeURIComponent(
       investigationId
     )}/feedback`,
     { headers: { Accept: "application/json" } }

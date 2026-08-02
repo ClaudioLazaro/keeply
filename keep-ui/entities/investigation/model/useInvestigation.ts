@@ -55,7 +55,7 @@ export function useInvestigationByIncident(
     incidentId ? investigationKeys.byIncident(incidentId) : null,
     () =>
       aiopsGet<Investigation[]>(
-        `/investigations?incident_id=${encodeURIComponent(incidentId!)}`
+        `/v1/investigations?incident_id=${encodeURIComponent(incidentId!)}`
       ),
     {
       // Poll only while any investigation for this incident is still running.
@@ -91,7 +91,7 @@ export function useInvestigationEvidence(
     investigationId ? investigationKeys.evidence(investigationId) : null,
     () =>
       aiopsGet<InvestigationEvidence[]>(
-        `/investigations/${encodeURIComponent(investigationId!)}/evidence`
+        `/v1/investigations/${encodeURIComponent(investigationId!)}/evidence`
       ),
     swrConfig
   );
@@ -113,7 +113,7 @@ export function useInvestigationHypotheses(
     investigationId ? investigationKeys.hypotheses(investigationId) : null,
     () =>
       aiopsGet<InvestigationHypothesis[]>(
-        `/investigations/${encodeURIComponent(investigationId!)}/hypotheses`
+        `/v1/investigations/${encodeURIComponent(investigationId!)}/hypotheses`
       ),
     swrConfig
   );

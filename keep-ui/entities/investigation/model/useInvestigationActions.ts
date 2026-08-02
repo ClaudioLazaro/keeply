@@ -32,7 +32,7 @@ export function useInvestigationFeedbackActions(): UseInvestigationFeedbackActio
       setIsSubmitting(true);
       try {
         const response = await fetch(
-          `${AIOPS_PROXY_BASE_PATH}/investigations/${encodeURIComponent(
+          `${AIOPS_PROXY_BASE_PATH}/v1/investigations/${encodeURIComponent(
             investigationId
           )}/feedback`,
           {
