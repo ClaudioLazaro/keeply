@@ -53,6 +53,14 @@ class KeepClient:
             raise KeepApiError(response.status_code, response.text, method, path)
         return response
 
+    def get_json(self, path: str, **kwargs: Any) -> Any:
+        """GET any Keep endpoint and return the decoded JSON.
+
+        Used for endpoints the AI plane only reads (e.g. /providers), where
+        a typed DTO would just duplicate Keep's own model.
+        """
+        return self._request("GET", path, **kwargs).json()
+
     # -- endpoints (keep/api/routes/incidents.py) ---------------------------
 
     def get_incident(self, incident_id: str) -> IncidentDto:

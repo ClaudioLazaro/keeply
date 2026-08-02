@@ -28,6 +28,11 @@ import SSOTab from "./auth/sso-tab";
 import WebhookSettings from "./webhook-settings";
 import SmtpSettings from "./smtp-settings";
 import PermissionsTab from "./auth/permissions-tab";
+import { RiRobot2Line, RiShieldKeyholeLine } from "react-icons/ri";
+// AI plane settings render as tabs here so there is one Settings page,
+// not a parallel one under /aiops.
+import { AgentSettingsTab } from "@/features/aiops/ui/AgentSettingsTab";
+import { AiPoliciesTab } from "@/features/aiops/ui/AiPoliciesTab";
 import { PermissionsTable } from "./auth/permissions-table";
 
 import { UsersTable } from "./auth/users-table";
@@ -81,6 +86,10 @@ export default function SettingsPage() {
         ? 2
         : newSelectedTab === "provider-images"
         ? 3
+        : newSelectedTab === "ai-agents"
+        ? 4
+        : newSelectedTab === "ai-policies"
+        ? 5
         : 0;
     const userSubTabIndex =
       newUserSubTab === "users"
@@ -384,6 +393,20 @@ export default function SettingsPage() {
           >
             Provider Icons
           </Tab>
+          {/* AI plane configuration lives here rather than in its own
+              section: an operator looks for settings in one place. */}
+          <Tab
+            icon={RiRobot2Line}
+            onClick={() => handleTabChange("ai-agents")}
+          >
+            AI Agents
+          </Tab>
+          <Tab
+            icon={RiShieldKeyholeLine}
+            onClick={() => handleTabChange("ai-policies")}
+          >
+            AI Policies
+          </Tab>
         </TabList>
         <TabPanels className="flex-grow overflow-hidden p-px">
           <TabPanel className="h-full">
@@ -459,6 +482,12 @@ export default function SettingsPage() {
           </TabPanel>
           <TabPanel className="h-full pt-4">
             <ProviderImagesSettings />
+          </TabPanel>
+          <TabPanel className="h-full pt-4 overflow-auto">
+            <AgentSettingsTab />
+          </TabPanel>
+          <TabPanel className="h-full pt-4 overflow-auto">
+            <AiPoliciesTab />
           </TabPanel>
         </TabPanels>
       </TabGroup>
