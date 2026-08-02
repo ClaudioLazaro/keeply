@@ -1,0 +1,167 @@
+# Canonical routing for keeply.clazar.net (cloudflared tunnel -> Traefik).
+#
+# ROUTING MODEL — read this before adding a rule.
+#
+# The Next.js frontend owns the ENTIRE path space of the host. The browser
+# never talks to keep-backend directly: `API_URL` is server-side only
+# (keep-ui/utils/apiUrl.ts) and client fetches go to the relative default
+# `/backend/*` (keep-ui/shared/lib/getApiUrlFromConfig.ts), which the Next
+# middleware rewrites in-process to `API_URL` (keep-ui/middleware.ts).
+#
+# So keep-frontend is a catch-all at priority 1, and every other service
+# gets a NON-COLLIDING prefix at a higher priority:
+#
+#   /keepapi/*   -> keep-backend   (stripPrefix + X-API-KEY injected)
+#   /aiopsapi/*  -> aiops-api      (stripPrefix)
+#   /mcp/*       -> mcp-gateway    (stripPrefix)
+#   /ws/*        -> keep-websocket (stripPrefix; soketi mounts /app at root)
+#   everything else -> keep-frontend
+#
+# NOTE: the backend prefix is `/aiopsapi`, NOT `/aiops`. `/aiops` is the
+# console UI section (keep-ui/app/(keep)/aiops) and must reach the
+# frontend. Same reasoning as `/keepapi`: API prefixes never shadow a UI
+# route.
+#
+# Do NOT re-introduce path-based rules like PathPrefix(`/incidents`) or
+# PathPrefix(`/api`) for keep-backend. Those paths belong to the UI, and
+# the overlap is exactly what broke the frontend: `/` redirects to
+# `/incidents`, which was being served as raw API JSON.
+
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-mcp
+  namespace: keeply
+spec:
+  stripPrefix:
+    prefixes: ["/mcp"]
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-aiops
+  namespace: keeply
+spec:
+  stripPrefix:
+    prefixes: ["/aiopsapi"]
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-keepapi
+  namespace: keeply
+spec:
+  stripPrefix:
+    prefixes: ["/keepapi"]
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-ws
+  namespace: keeply
+spec:
+  stripPrefix:
+    prefixes: ["/ws"]
+---
+# Dev-cluster convenience: inject the Keep API key so the runbook's e2e
+# curls (POST /keepapi/incidents) work without carrying a token around.
+# Remove this in any environment that is not a throwaway dev cluster.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keep-api-key
+  namespace: keeply
+spec:
+  headers:
+    customRequestHeaders:
+      X-API-KEY: dev-key
+---
+# keep-backend, under its own prefix. Priority high so it wins over the
+# frontend catch-all.
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keeply-keep
+  namespace: keeply
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`keeply.clazar.net`) && PathPrefix(`/keepapi`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: strip-keepapi
+        - name: keep-api-key
+      services:
+        - name: keep-backend
+          port: 8080
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keeply-aiops
+  namespace: keeply
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`keeply.clazar.net`) && PathPrefix(`/aiopsapi`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: strip-aiops
+      services:
+        - name: aiops-api
+          port: 8080
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keeply-mcp
+  namespace: keeply
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`keeply.clazar.net`) && PathPrefix(`/mcp`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: strip-mcp
+      services:
+        - name: mcp-gateway
+          port: 8090
+---
+# soketi. The browser reaches it at wss://keeply.clazar.net/ws/app/<key>
+# because keep-frontend is configured with the RELATIVE `PUSHER_HOST=/ws`
+# (see k8s/05-frontend.yaml and keep-ui/utils/hooks/usePusher.ts:27).
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keeply-ws
+  namespace: keeply
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`keeply.clazar.net`) && PathPrefix(`/ws`)
+      kind: Rule
+      priority: 100
+      middlewares:
+        - name: strip-ws
+      services:
+        - name: keep-websocket
+          port: 6001
+---
+# Catch-all. Lowest priority: anything not claimed above is a UI route.
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: keeply-frontend
+  namespace: keeply
+spec:
+  entryPoints: [web]
+  routes:
+    - match: Host(`keeply.clazar.net`)
+      kind: Rule
+      priority: 1
+      services:
+        - name: keep-frontend
+          port: 3000

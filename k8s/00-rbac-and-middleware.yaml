@@ -1,0 +1,46 @@
+# ServiceAccount + RBAC for the MCP gateway to read live K8s evidence
+# (M3 AC: specialist.kubernetes with MCP_K8S_MODE=live).
+# Read-only across core/* — no write/mutate permissions anywhere.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keep-mcp
+  namespace: keeply
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: keep-mcp-reader
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: keep-mcp-reader
+subjects:
+  - kind: ServiceAccount
+    name: keep-mcp
+    namespace: keeply
+roleRef:
+  kind: ClusterRole
+  name: keep-mcp-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Traefik middlewares (mirrors cafecafe-security-headers pattern).
+# Used by the keeply ingresses to keep Cloudflare happy.
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: keeply-security-headers
+  namespace: keeply
+spec:
+  headers:
+    frameDeny: true
+    sslRedirect: true
+    browserXssFilter: true
+    contentTypeNosniff: true
+    stsIncludeSubdomains: true
+    stsSeconds: 31536000

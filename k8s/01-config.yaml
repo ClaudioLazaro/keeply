@@ -1,0 +1,110 @@
+# ConfigMaps + Secret + PVC for the keeply stack.
+# Keep secrets small + explicit; everything else is plain ConfigMap.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aiops-env
+  namespace: keeply
+data:
+  AIOPS_ENVIRONMENT: "dev"
+  AIOPS_KEEP_API_URL: "http://keep-backend:8080"
+  AIOPS_MCP_GATEWAY_URL: "http://mcp-gateway:8090"
+  AIOPS_AUTO_CREATE_TABLES: "false"
+  AIOPS_DATABASE_URL: "postgresql+psycopg://aiops:aiops@postgres:5432/aiops"
+  AIOPS_OTEL_CONSOLE_EXPORT: "true"
+  AIOPS_BUDGET_MAX_TOOL_CALLS: "50"
+  AIOPS_BUDGET_MAX_WALL_TIME_SECONDS: "120"
+  AIOPS_BUDGET_MAX_LLM_TOKENS: "200000"
+  AIOPS_LLM_MODEL: ""
+  AIOPS_LLM_EMBEDDING_MODEL: ""
+  AIOPS_KNOWLEDGE_SEED_DIR: "/app/examples/runbooks"
+  # Default: no auth (dev cluster); flip to true in prod
+  AIOPS_AUTH_ENABLED: "false"
+  AIOPS_AUTO_INVESTIGATE_SEVERITIES: '["critical", "high"]'
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-env
+  namespace: keeply
+data:
+  MCP_ENVIRONMENT: "dev"
+  # Control plane the gateway pulls integration config from
+  # (stub/live mode + credentials set through the UI). The
+  # MCP_* modes below stay the bootstrap defaults: a stored row
+  # overrides them, and a control-plane outage falls back here.
+  MCP_AIOPS_API_URL: "http://aiops-api:8080"
+  MCP_K8S_MODE: "live"          # use real cluster API for evidence
+  MCP_PROMETHEUS_MODE: "stub"   # no prometheus in this cluster
+  MCP_DATADOG_MODE: "stub"
+  MCP_EKS_MODE: "stub"
+  MCP_RDS_MODE: "stub"
+  MCP_ARGOCD_MODE: "stub"
+  MCP_JIRA_MODE: "stub"
+  MCP_SLACK_MODE: "stub"
+  MCP_BITBUCKET_MODE: "stub"
+  MCP_BACKSTAGE_MODE: "stub"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keep-env
+  namespace: keeply
+data:
+  AUTH_TYPE: "NO_AUTH"
+  KEEP_METRICS: "true"
+  # Outbox spike (ADR-0004) — webhook to aiops-api for domain events
+  KEEP_DOMAIN_EVENTS_ENABLED: "true"
+  KEEP_DOMAIN_EVENTS_WEBHOOK_URL: "http://aiops-api:8080/v1/events/keep"
+  # SQLite path is /state/keep.db (the keep-api image persists there)
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: keeply-secrets
+  namespace: keeply
+type: Opaque
+stringData:
+  # Keep <-> aiops-api shared HMAC key (must match the keep outbox dispatcher
+  # and the aiops-api event bridge verifier).
+  AIOPS_WEBHOOK_SECRET: "dev-webhook-secret"
+  AIOPS_KEEP_API_KEY: "dev-key"
+  # LLM provider credentials are deliberately NOT in this file — it is
+  # committed to git. Add them out-of-band and reference the variable NAME
+  # from the agent config (PUT /v1/config {"llm_api_key_env": "..."}):
+  #
+  #   kubectl -n keeply patch secret keeply-secrets --type=merge \
+  #     -p '{"stringData":{"DEEPSEEK_API_KEY":"<key>"}}'
+  #
+  # aiops-api picks them up via `envFrom: secretRef: keeply-secrets`, so no
+  # deployment change is needed for a new provider.
+---
+# PVC for keep-backend's SQLite database.
+#
+# NOT optional: without it the database lives inside the container and
+# every rollout wipes installed providers, incidents and alerts. That is
+# how the DeepSeek provider disappeared once — a config change to an
+# unrelated env var silently reset the whole Keep dataset.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keep-state
+  namespace: keeply
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+# PVC for postgres data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aiops-postgres-data
+  namespace: keeply
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi

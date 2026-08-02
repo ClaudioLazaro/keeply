@@ -1,0 +1,161 @@
+# aiops-api + mcp-gateway + one-shot aiops-migrate Job.
+# Both processes share the keep-aiops:dev image; the command overrides
+# the entrypoint to the right uvicorn target.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: aiops-migrate
+  namespace: keeply
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: aiops-migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: keep-aiops:dev
+          imagePullPolicy: Never
+          command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: keeply-secrets
+          env:
+            - name: AIOPS_DATABASE_URL
+              value: "postgresql+psycopg://aiops:aiops@postgres:5432/aiops"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-api
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: aiops-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-api
+  namespace: keeply
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aiops-api
+  template:
+    metadata:
+      labels:
+        app: aiops-api
+    spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting; sleep 2; done"]
+      containers:
+        - name: aiops-api
+          image: keep-aiops:dev
+          imagePullPolicy: Never
+          command: ["uvicorn", "aiops_api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          envFrom:
+            - configMapRef:
+                name: aiops-env
+            - secretRef:
+                name: keeply-secrets
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-gateway
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: mcp-gateway
+  ports:
+    - name: http
+      port: 8090
+      targetPort: 8090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-gateway
+  namespace: keeply
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-gateway
+  template:
+    metadata:
+      labels:
+        app: mcp-gateway
+    spec:
+      serviceAccountName: keep-mcp
+      containers:
+        - name: mcp-gateway
+          image: keep-aiops:dev
+          imagePullPolicy: Never
+          command: ["uvicorn", "mcp_gateway.main:app", "--host", "0.0.0.0", "--port", "8090"]
+          envFrom:
+            - configMapRef:
+                name: mcp-env
+          env:
+            # Same key aiops-api expects; the gateway uses it to pull
+            # integration config from /v1/integrations/resolved.
+            - name: MCP_AIOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: AIOPS_KEEP_API_KEY
+          ports:
+            - containerPort: 8090
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

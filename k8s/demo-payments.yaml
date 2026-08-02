@@ -1,0 +1,23 @@
+# M3 demo fixture: a payment-api pod that OOMs and crash loops.
+# This is what the live K8s specialist will discover in MCP_K8S_MODE=live.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: payments
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: payment-api-7d9f4b6c5-x2vkm
+  namespace: payments
+  labels:
+    app: payment-api
+spec:
+  restartPolicy: Never
+  containers:
+    - name: payment-api
+      image: registry.k8s.io/pause:3.9
+      command: ["sh", "-c", "echo 'java.lang.OutOfMemoryError: Java heap space' >&2; exit 137"]
+      resources:
+        limits:
+          memory: "64Mi"

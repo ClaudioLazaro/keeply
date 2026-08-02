@@ -1,0 +1,86 @@
+# keep-frontend: the keeply build of keep-ui (Dockerfile.keeply), which
+# ships the M3 investigation panel + the /api/aiops proxy. Built locally
+# and imported into k3d, so imagePullPolicy is IfNotPresent:
+#
+#   docker build -f keep-ui/Dockerfile.keeply -t keep-ui:keeply ./keep-ui
+#   k3d image import keep-ui:keeply -c cuda-cluster
+#
+# The frontend owns the whole path space of keeply.clazar.net (see
+# k8s/06-ingressroutes.yaml). API_URL / AIOPS_API_URL are SERVER-side only:
+# the browser fetches relative `/backend/*` and `/api/aiops/*`, which the
+# Next middleware and route handler proxy in-process.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: keep-frontend
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: keep-frontend
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keep-frontend
+  namespace: keeply
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keep-frontend
+  template:
+    metadata:
+      labels:
+        app: keep-frontend
+    spec:
+      containers:
+        - name: ui
+          image: keep-ui:keeply
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AUTH_TYPE
+              value: "NO_AUTH"
+            - name: AUTH_DEBUG
+              value: "true"
+            - name: API_URL
+              value: "http://keep-backend:8080"
+            - name: AIOPS_API_URL
+              value: "http://aiops-api:8080"
+            - name: AIOPS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: AIOPS_KEEP_API_KEY
+            # RELATIVE pusher host: usePusher.ts treats a leading "/" as
+            # "same origin, this path" and derives wsHost/wsPort from
+            # window.location. An absolute in-cluster name like
+            # "keep-websocket" is NOT resolvable from the browser.
+            - name: PUSHER_HOST
+              value: "/ws"
+            - name: PUSHER_PORT
+              value: "6001"
+            - name: PUSHER_APP_KEY
+              value: "keepappkey"
+            - name: NEXT_TELEMETRY_DISABLED
+              value: "1"
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /api/healthcheck
+              port: 3000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

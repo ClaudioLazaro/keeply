@@ -1,0 +1,205 @@
+# Postgres + soketi + keep-backend.
+# Postgres runs in-cluster; for a real deploy, swap for a managed PG and
+# point AIOPS_DATABASE_URL at it.
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: keeply
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - name: POSTGRES_USER
+              value: aiops
+            - name: POSTGRES_PASSWORD
+              value: aiops
+            - name: POSTGRES_DB
+              value: aiops
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "aiops", "-d", "aiops"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: aiops-postgres-data
+---
+# Soketi (Pusher-compatible) for the keep-ui real-time channel.
+# Required: the keep-ui incident detail pushes live timeline events.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keep-websocket
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: keep-websocket
+  ports:
+    - name: ws
+      port: 6001
+      targetPort: 6001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keep-websocket
+  namespace: keeply
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keep-websocket
+  template:
+    metadata:
+      labels:
+        app: keep-websocket
+    spec:
+      containers:
+        - name: soketi
+          image: quay.io/soketi/soketi:1.6-16-alpine
+          args:
+            - "start"
+            - "--host=0.0.0.0"
+            - "--port=6001"
+          ports:
+            - containerPort: 6001
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+---
+# keep-backend (the upstream keep API) with the outbox spike wired in.
+# Uses the keep-api:m0 image (already imported via k3d image import) with
+# the local keep/ overlay so domain_events is registered.
+apiVersion: v1
+kind: Service
+metadata:
+  name: keep-backend
+  namespace: keeply
+spec:
+  type: ClusterIP
+  selector:
+    app: keep-backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keep-backend
+  namespace: keeply
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the ReadWriteOnce PVC below can only be
+  # mounted by one node, so a rolling update deadlocks with the new pod
+  # Pending forever on a different node.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: keep-backend
+  template:
+    metadata:
+      labels:
+        app: keep-backend
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+      volumes:
+        - name: keep-state
+          persistentVolumeClaim:
+            claimName: keep-state
+      containers:
+        - name: keep
+          image: keep-api:m0
+          imagePullPolicy: Never  # k3d image import
+          volumeMounts:
+            # The SQLite database. Without this mount a rollout destroys
+            # every installed provider, incident and alert.
+            - name: keep-state
+              mountPath: /state
+          env:
+            - name: DATABASE_CONNECTION_STRING
+              value: "sqlite:////state/keep.db"
+            # Keep's built-in AI (incident reports) uses the OpenAI SDK,
+            # which honours OPENAI_BASE_URL — so any OpenAI-compatible
+            # provider works. The frontend resolves its credential from the
+            # installed Keep provider instead; this is the backend fallback.
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: DEEPSEEK_API_KEY
+                  optional: true
+            - name: OPENAI_BASE_URL
+              value: "https://api.deepseek.com"
+            - name: AUTH_TYPE
+              value: "NO_AUTH"
+            - name: KEEP_METRICS
+              value: "true"
+            - name: KEEP_DOMAIN_EVENTS_ENABLED
+              value: "true"
+            - name: KEEP_DOMAIN_EVENTS_WEBHOOK_URL
+              value: "http://aiops-api:8080/v1/events/keep"
+            - name: KEEP_DOMAIN_EVENTS_WEBHOOK_SECRET
+              value: "dev-webhook-secret"
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: "/tmp/prometheus"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthcheck
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: 1000m
+              memory: 1.5Gi
