@@ -32,8 +32,18 @@ class Settings(BaseSettings):
     # Context builder (M2)
     context_timeline_limit: int = 50
 
+    # Cost budget per investigation (M3). Caps every MCP tool call, the
+    # wall-clock gathering+hypothesizing phase, and the LLM token usage.
+    # A breach moves the investigation to `failed` (coordinator raises
+    # BudgetExceeded and the FSM catches it).
+    budget_max_tool_calls: int = 50
+    budget_max_wall_time_seconds: float = 120.0
+    budget_max_llm_tokens: int = 200_000
+
     # LLM (LiteLLM, ADR-0007). Empty model = disabled: RCA generation uses
     # the deterministic rule-based fallback and everything works without a key.
+    # These stay as bootstrap defaults; the persisted agent config
+    # (modules/config) overrides them at runtime.
     llm_model: str = ""
     llm_api_key: str = ""
 

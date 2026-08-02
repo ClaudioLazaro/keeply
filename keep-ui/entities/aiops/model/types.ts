@@ -1,0 +1,129 @@
+// Mirrors the aiops-api console payloads
+// (keep-aiops/aiops_api/modules/{tools,stats,policy}).
+
+export type PolicyDecision = "allow" | "deny" | "approval_required";
+
+/**
+ * Where a tool's data comes from. "stub" means canned demo payloads —
+ * indistinguishable from real telemetry once rendered, which is exactly
+ * why it has to be shown.
+ */
+export type ToolMode = "live" | "stub" | "unknown";
+
+export interface ToolCatalogEntry {
+  name: string;
+  description: string;
+  execution_class: string;
+  input_schema: Record<string, unknown>;
+  mode: ToolMode;
+  /** Effective policy outcome for this tool right now. */
+  decision: PolicyDecision;
+  /** null when the fail-closed default produced the decision. */
+  policy_id: string | null;
+}
+
+export interface ToolCatalogResponse {
+  gateway_url: string;
+  /** false = catalog could not be fetched; `tools` is empty and `error` says why. */
+  gateway_available: boolean;
+  tools: ToolCatalogEntry[];
+  error: string | null;
+}
+
+export interface BudgetLimits {
+  max_tool_calls: number;
+  max_wall_time_seconds: number;
+  max_llm_tokens: number;
+}
+
+export interface AiopsStats {
+  investigations_total: number;
+  investigations_by_status: Record<string, number>;
+  investigations_last_24h: number;
+  evidence_total: number;
+  evidence_gaps: number;
+  feedback_useful: number;
+  feedback_not_useful: number;
+  budget: BudgetLimits;
+  mode: string;
+  llm_enabled: boolean;
+}
+
+export interface PolicyRule {
+  execution_class: string;
+  decision: PolicyDecision;
+  tools: string[];
+  environments: string[];
+}
+
+export interface Policy {
+  id: string;
+  tenant_id: string;
+  description: string | null;
+  rules: PolicyRule[];
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Presence and origin of the credential — never the value itself. */
+export interface LlmKeyStatus {
+  env_var: string | null;
+  present: boolean;
+  source: string;
+  /** Last 4 characters only, so a key can be identified but not rebuilt. */
+  masked: string;
+  /** The installed Keep provider supplying the credential, if any. */
+  provider_id: string | null;
+  provider_type: string | null;
+}
+
+export interface AgentConfig {
+  tenant_id: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  llm_enabled: boolean;
+  llm_api_key: LlmKeyStatus;
+  budget_max_tool_calls: number;
+  budget_max_wall_time_seconds: number;
+  budget_max_llm_tokens: number;
+  auto_investigate_severities: string[];
+  disabled_specialists: string[];
+  available_specialists: string[];
+  available_severities: string[];
+}
+
+/** Partial update: omitted fields are untouched, explicit null resets to env. */
+export interface AgentConfigUpdate {
+  llm_provider?: string | null;
+  llm_model?: string | null;
+  llm_api_key_env?: string | null;
+  budget_max_tool_calls?: number | null;
+  budget_max_wall_time_seconds?: number | null;
+  budget_max_llm_tokens?: number | null;
+  auto_investigate_severities?: string[] | null;
+  disabled_specialists?: string[] | null;
+}
+
+/** An AI provider installed in Keep, offered for LLM routing. */
+export interface LlmProvider {
+  id: string;
+  type: string;
+  label: string;
+  configured: boolean;
+  suggested_model: string;
+}
+
+export interface Integration {
+  name: string;
+  label: string;
+  mode: ToolMode;
+  tools: string[];
+  notes: string;
+  /** The installed Keep provider backing this integration, if any. */
+  provider: { id: string; type: string; display_name: string } | null;
+  /** Keep provider types that can back it, for the install link. */
+  provider_types: string[];
+  /** True for backends using ambient credentials (K8s SA, AWS chain). */
+  ambient_credentials: boolean;
+}

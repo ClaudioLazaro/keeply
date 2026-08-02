@@ -1,0 +1,103 @@
+# keeply keep-ui — built from local source so the M3 investigation panel
+# + aiops proxy ship in the image.
+#
+# The keep-ui's next.config.js has `output: "standalone"`, which makes
+# `npx next start` fail (it needs `node .next/standalone/server.js`
+# instead). We drop the standalone setting at build time so the build
+# produces a standard .next dir that `next start` can run.
+#
+# The middleware reads `process.env.AUTH_TYPE` — the value is inlined at
+# build time by webpack/Next.js when NODE_ENV=production, so we MUST set
+# it in the deps stage before `npm run build`.
+#
+# DO NOT patch middleware.ts to force `isAuthenticated = true` in NO_AUTH.
+# That looks like it saves a redirect, but it skips /signin, which is
+# exactly where the NoAuth Credentials provider (auth.config.ts:185)
+# mints the session and its accessToken. Without a session every
+# client-side call to /backend/* goes out unauthenticated, keep-backend
+# answers 401, and ApiClient.handleResponse (shared/api/ApiClient.ts:85)
+# calls next-auth's signOutClient(). The Auth.js browser client then
+# falls back to its hardcoded base URL — `http://localhost:3000/api/auth`
+# — and the user gets bounced to localhost. Let the real signin flow run:
+# SignInForm auto-submits the credentials provider and lands on the
+# callbackUrl.
+
+FROM node:20-alpine AS base
+
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+# Same env that production will see. Lets Next.js inline the right
+# value into the middleware bundle.
+ENV AUTH_TYPE=NO_AUTH
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+COPY package.json package-lock.json ./
+# --include=dev is REQUIRED: NODE_ENV=production makes npm omit
+# devDependencies, and the build toolchain lives there (tailwindcss,
+# tailwind-variants, postcss, postcss-import). Without it `next build`
+# dies with "Cannot find module 'postcss-import'" and
+# "Can't resolve 'tailwind-variants'".
+RUN npm install --include=dev --no-audit --maxsockets 1
+COPY . .
+# Drop `output: "standalone"` so the build produces a standard .next
+# that `next start` can run directly.
+RUN sed -i '/^  output: "standalone",$/d' next.config.js
+# Add /api/aiops to the middleware skip list. The middleware regex
+# has a `|`-separated negative lookahead like `api/aws-marketplace$|api/auth`
+# and the function body has a `!pathname.startsWith("/api/healthcheck")`
+# check. Append `api/aiops` to both.
+#
+# The `&&` MUST be escaped as `\&\&`: in a sed replacement an unescaped
+# `&` means "the whole match", so `&&` silently expands to the matched
+# text twice and produces `...startsWith("/api/healthcheck") !pathname
+# .startsWith("/api/healthcheck")!pathname.startsWith(...)` — a syntax
+# error the build only surfaces as "Expected ')', got 'pathname'".
+RUN sed -i 's#api/auth#api/auth|api/aiops#g' middleware.ts
+RUN sed -i 's#!pathname.startsWith("/api/healthcheck")#!pathname.startsWith("/api/healthcheck") \&\& !pathname.startsWith("/api/aiops")#' middleware.ts
+# Public origin of this deployment. Auth.js v5's browser client resolves
+# its API base from this at build time; when it is unset the bundle ships
+# a literal `http://localhost:3000/api/auth` fallback, which is how a
+# stray signOut() sends the user to localhost. Override per environment:
+#   docker build --build-arg NEXTAUTH_URL=https://<host> ...
+ARG NEXTAUTH_URL=https://keeply.clazar.net
+ENV NEXTAUTH_URL=${NEXTAUTH_URL}
+ENV AUTH_URL=${NEXTAUTH_URL}
+ENV AUTH_TRUST_HOST=true
+RUN npm run build
+
+FROM base AS runner
+ARG GIT_COMMIT_HASH=local
+ARG KEEP_VERSION=keeply-m3
+ENV GIT_COMMIT_HASH=${GIT_COMMIT_HASH}
+ENV KEEP_VERSION=${KEEP_VERSION}
+ARG AIOPS_API_URL=http://aiops-api:8080
+ENV AIOPS_API_URL=${AIOPS_API_URL}
+ARG API_URL=http://keep-backend:8080
+ENV API_URL=${API_URL}
+# ARG does not cross stages — redeclare so the runner sees the same value.
+ARG NEXTAUTH_URL=https://keeply.clazar.net
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV AUTH_TYPE=NO_AUTH
+ENV PORT=3000
+ENV NEXTAUTH_SECRET=keeply-dev-secret
+# Server-side counterpart of the build-time value. AUTH_TRUST_HOST lets
+# Auth.js honour the X-Forwarded-* headers Traefik/cloudflared send.
+ENV NEXTAUTH_URL=${NEXTAUTH_URL}
+ENV AUTH_URL=${NEXTAUTH_URL}
+ENV AUTH_TRUST_HOST=true
+WORKDIR /app
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
+COPY --from=deps /app/public ./public
+COPY --from=deps --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=deps --chown=nextjs:nodejs /app/next.config.js ./next.config.js
+COPY --from=deps --chown=nextjs:nodejs /app/package.json ./package.json
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chgrp -R 0 /app && chmod -R g=u /app
+USER nextjs
+EXPOSE 3000
+
+# Runtime AIOPS_API_KEY is supplied via Kubernetes Secret.
+CMD ["npx", "next", "start", "-p", "3000"]

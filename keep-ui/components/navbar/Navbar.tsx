@@ -7,6 +7,7 @@ import { Menu } from "@/components/navbar/Menu";
 import { MinimizeMenuButton } from "@/components/navbar/MinimizeMenuButton";
 import { DashboardLinks } from "@/components/navbar/DashboardLinks";
 import { IncidentsLinks } from "@/components/navbar/IncidentLinks";
+import { AIOpsLinks } from "@/components/navbar/AIOpsLinks";
 import { SetSentryUser } from "./SetSentryUser";
 import "./Navbar.css";
 
@@ -19,6 +20,7 @@ export default async function NavbarInner() {
         <Search session={session} />
         <div className="pt-4 space-y-4 flex-1 overflow-auto scrollable-menu-shadow">
           <IncidentsLinks session={session} />
+          <AIOpsLinks />
           <AlertsLinks session={session} />
           <NoiseReductionLinks session={session} />
           <DashboardLinks />
