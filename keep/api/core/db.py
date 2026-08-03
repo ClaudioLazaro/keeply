@@ -4905,14 +4905,16 @@ def confirm_predicted_incident_by_id(
     if isinstance(incident_id, str):
         incident_id = __convert_to_uuid(incident_id)
     with Session(engine) as session:
+        # No joinedload here: `Incident.alerts` is a plain @property backed by
+        # a PrivateAttr, not a mapped relationship, so asking SQLAlchemy to
+        # eager-load it raised ArgumentError and made this endpoint a
+        # guaranteed 500. The alerts were never read afterwards anyway.
         incident = session.exec(
-            select(Incident)
-            .where(
+            select(Incident).where(
                 Incident.tenant_id == tenant_id,
                 Incident.id == incident_id,
                 Incident.is_candidate == expression.true(),
             )
-            .options(joinedload(Incident.alerts))
         ).first()
 
         if not incident:
@@ -4925,10 +4927,27 @@ def confirm_predicted_incident_by_id(
         ).update(
             {
                 "is_visible": True,
+                # Clearing this is what confirming means. Leaving it set made
+                # the incident visible to a query nobody issues: the default
+                # listing filters on is_candidate == False, so a confirmed
+                # incident stayed hidden and the approval had no effect.
+                "is_candidate": False,
             }
         )
 
         session.commit()
+
+        # An approved incident is new to everything downstream: until now it
+        # was hidden, so nothing subscribed to the outbox had ever seen it.
+        # This is what opens its investigation.
+        from keep.api.core.domain_events import INCIDENT_CREATED, emit_incident_event
+
+        emit_incident_event(session, tenant_id, incident, INCIDENT_CREATED)
+        session.commit()
+
+        # Refresh last: a commit expires the instance's attributes, and the
+        # caller serialises it after this session closes. Refreshing before
+        # the final commit left it detached with everything expired.
         session.refresh(incident)
 
         return incident

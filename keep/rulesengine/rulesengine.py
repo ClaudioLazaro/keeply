@@ -23,6 +23,7 @@ from keep.api.core.db import (
 from keep.api.core.db import get_rules as get_rules_db
 from keep.api.core.db import is_all_alerts_in_status
 from keep.api.core.dependencies import get_pusher_client
+from keep.api.core.domain_events import INCIDENT_CREATED, emit_incident_event
 from keep.api.models.alert import AlertDto, AlertSeverity, AlertStatus
 from keep.api.models.db.alert import Incident
 from keep.api.models.db.rule import Rule
@@ -202,6 +203,17 @@ class RulesEngine:
                             if send_created_event:
                                 RulesEngine.send_workflow_event(
                                     self.tenant_id, session, incident_dto, "created"
+                                )
+                                # Domain event too, not just the workflow one.
+                                # Only IncidentBl.create_incident emitted this,
+                                # so an incident born from a correlation rule
+                                # never reached anything subscribed to the
+                                # outbox — including the AIOps plane, which is
+                                # what opens an investigation. The whole
+                                # alert -> rule -> incident -> RCA path stopped
+                                # silently at the third step.
+                                emit_incident_event(
+                                    session, self.tenant_id, incident, INCIDENT_CREATED
                                 )
                             elif incident.is_visible:
                                 RulesEngine.send_workflow_event(

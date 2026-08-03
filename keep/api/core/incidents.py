@@ -189,6 +189,19 @@ static_facets = [
 static_facets_dict = {facet.id: facet for facet in static_facets}
 
 
+def _unescaped(field_name: str) -> str:
+    """A CEL property name without the brackets the parser may add.
+
+    The path stringifier escapes any component containing a character
+    outside [a-zA-Z0-9*], and an underscore counts — so `is_visible` is
+    reported back as `[is_visible]` while `hasLinkedIncident` is not.
+    Comparing the raw string therefore never matched for the one special
+    field that has an underscore in its name, and the caller's explicit
+    `is_visible` filter was silently overridden by the default one.
+    """
+    return field_name[1:-1] if field_name.startswith("[") and field_name.endswith("]") else field_name
+
+
 def __build_base_incident_query(
     tenant_id: str,
     select_args: list,
@@ -227,7 +240,7 @@ def __build_base_incident_query(
             (
                 True
                 for field in involved_fields
-                if field.field_name == "is_visible"
+                if _unescaped(field.field_name) == "is_visible"
             ),
             False,
         )

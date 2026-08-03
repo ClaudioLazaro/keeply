@@ -16,7 +16,7 @@ from __future__ import annotations
 from mcp_gateway import integrations
 from mcp_gateway.settings import get_settings
 from mcp_gateway.tools import register_tool
-from mcp_gateway.tools.backend import BackendUnavailable
+from mcp_gateway.tools.backend import BackendUnavailable, ResourceNotFound
 
 
 class KubernetesBackendUnavailable(BackendUnavailable):
@@ -205,6 +205,15 @@ def _summarize_pod(pod: Any) -> dict[str, Any]:
     }
 
 
+def _is_not_found(exc: Exception) -> bool:
+    """Whether a kubernetes client error means "absent", not "unreachable".
+
+    Matched on the client's own status attribute rather than the message,
+    so a pod whose name happens to contain "404" cannot fake it.
+    """
+    return getattr(exc, "status", None) == 404
+
+
 def _live_get_pods(namespace: str | None) -> dict[str, Any]:
     try:
         api = _live_core_v1()
@@ -252,6 +261,14 @@ def _live_get_logs(pod: str, namespace: str, tail_lines: int) -> dict[str, Any]:
     except KubernetesBackendUnavailable:
         raise
     except Exception as exc:
+        # A pod that is not there is an answer about the system, not a
+        # failure of the tooling. Investigations routinely ask about
+        # services that do not run in this cluster, and calling that
+        # "backend unavailable" pointed the RCA at a healthy gateway.
+        if _is_not_found(exc):
+            raise ResourceNotFound(
+                f"pod '{pod}' not found in namespace '{namespace}'"
+            ) from exc
         raise KubernetesBackendUnavailable(f"kubernetes API call failed: {exc}") from exc
     return {"backend": "live", "pod": pod, "namespace": namespace, "lines": text.splitlines()}
 

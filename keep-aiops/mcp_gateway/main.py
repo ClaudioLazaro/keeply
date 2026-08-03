@@ -23,7 +23,7 @@ from mcp_gateway.audit import build_audit_entry, record_audit
 from mcp_gateway.settings import get_settings
 from mcp_gateway.telemetry import init_telemetry, tool_span
 from mcp_gateway.tools import catalog, get_tool, validate_arguments
-from mcp_gateway.tools.backend import BackendUnavailable
+from mcp_gateway.tools.backend import BackendUnavailable, ResourceNotFound
 
 class InvokeRequest(BaseModel):
     tenant_id: str
@@ -84,6 +84,18 @@ def create_app() -> FastAPI:
                             "error": str(exc),
                             "hint": "tool backend temporarily unavailable; retry with backoff",
                             "retry_after_seconds": exc.retry_after_seconds,
+                        },
+                    ) from exc
+                except ResourceNotFound as exc:
+                    # The backend answered; the resource simply is not there.
+                    # Reporting that as 503 made an evidence gap read as a
+                    # broken gateway.
+                    outcome = "not_found"
+                    raise HTTPException(
+                        status_code=404,
+                        detail={
+                            "error": str(exc),
+                            "hint": "the backend is healthy; this resource does not exist",
                         },
                     ) from exc
                 except ValueError as exc:
