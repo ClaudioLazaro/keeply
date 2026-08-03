@@ -198,7 +198,12 @@ def run_investigation(investigation_id: str) -> None:
                     session.add(item)
                 _build_and_store_context_pack(investigation, tenant_id, incident_id, settings)
                 _set_status(session, investigation, "hypothesizing")
-                knowledge_results = _query_knowledge_safe(investigation, evidence)
+                knowledge_results, knowledge_gap = _query_knowledge_safe(
+                    investigation, evidence
+                )
+                if knowledge_gap is not None:
+                    evidence.append(knowledge_gap)
+                    session.add(knowledge_gap)
                 rca_draft, hypotheses, citations = generate_rca(
                     investigation, evidence, investigation.context_pack, knowledge_results, settings=settings
                 )
@@ -335,25 +340,40 @@ def _build_and_store_context_pack(
 
 
 
-def _query_knowledge_safe(investigation: Investigation, evidence: list[Evidence]) -> list[dict]:
-    """Retrieve relevant knowledge docs in-process; [] when unavailable.
+def _query_knowledge_safe(
+    investigation: Investigation, evidence: list[Evidence]
+) -> tuple[list[dict], Evidence | None]:
+    """Retrieve relevant knowledge docs in-process.
 
-    The knowledge module lands in a sibling slice — import defensively and
-    tolerate retrieval failure so hypothesizing degrades to evidence-only.
+    Returns ``(results, gap)``. The knowledge module lands in a sibling
+    slice — import defensively and tolerate retrieval failure so
+    hypothesizing degrades to evidence-only. The gap is what makes that
+    degradation visible instead of silent.
     """
     try:
         from aiops_api.modules.knowledge import query_knowledge
     except (ImportError, ModuleNotFoundError):
-        return []
+        # Not installed in this deployment: an absence by design, not a
+        # failure, so nothing to report.
+        return [], None
     query = " ".join(item.summary for item in evidence)[:500] or investigation.incident_id
     try:
         with investigation_span(investigation.id, name="knowledge.retrieve", query=query) as span:
             results = list(query_knowledge(investigation.tenant_id, query, k=5))
             span.set_attribute("results_count", len(results))
-            return results
-    except Exception:  # noqa: BLE001
+            return results, None
+    except Exception as exc:  # noqa: BLE001
         logger.exception("knowledge retrieval failed", extra={"investigation_id": investigation.id})
-        return []
+        # Reported as an evidence gap, not swallowed. Returning a bare []
+        # made "no runbook matched this incident" and "the knowledge search
+        # broke" produce identical drafts, so hypotheses silently lost
+        # their grounding with nothing on the page to say so.
+        return [], Evidence(
+            investigation_id=investigation.id,
+            tool="knowledge_search",
+            summary=f"evidence gap — knowledge retrieval failed: {type(exc).__name__}: {exc}",
+            backend="gap",
+        )
 
 
 # --------------------------------------------------------------------------- #

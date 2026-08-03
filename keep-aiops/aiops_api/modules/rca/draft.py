@@ -78,17 +78,25 @@ def render_draft(
     knowledge: list[Any],
     citations: dict[str, dict[str, str]],
     investigation_id: str,
+    ai_assisted: bool = True,
 ) -> str:
     """Render the RCA draft markdown.
 
     Sections: Summary / Hypotheses (confidence + citations) / Evidence /
     Knowledge references / suggest-only disclaimer. Hypothesis prose is
     noun-phrase only — never imperative remediation verbs.
+
+    `ai_assisted` is not decoration. The deterministic fallback runs
+    whenever the model is absent, unreachable, over budget or unparseable,
+    and it produced a draft headed "AI-assisted" — so a template's ranking
+    was read as a model's reasoning. The header now says which one wrote it.
     """
     from aiops_api.modules.rca.provenance import describe
 
     lines = [
-        "**RCA draft (AI-assisted)**",
+        "**RCA draft (AI-assisted)**"
+        if ai_assisted
+        else "**RCA draft (deterministic — no model was used)**",
         "",
         "## Summary",
         summary or default_summary(incident, evidence, knowledge),

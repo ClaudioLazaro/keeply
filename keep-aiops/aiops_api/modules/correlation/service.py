@@ -93,21 +93,35 @@ def _client_http(client: CorrelationClient) -> httpx.Client:
     )
 
 
+class KeepUnreachable(RuntimeError):
+    """Keep could not be read.
+
+    Distinct from any answer Keep might give. Treating a failed read as
+    "no config" made the defaults apply, and the default for Enabled is
+    False — so an unreachable Keep was reported to the operator as
+    "correlation is switched off", sending them to flip a switch that was
+    already on.
+    """
+
+
 def fetch_config(client: CorrelationClient) -> dict[str, Any] | None:
     """This algorithm's whole config row as Keep holds it.
 
     Returned verbatim rather than reduced to settings, because writing
     execution logs back means echoing every other field untouched — Keep's
     update replaces the row wholesale.
+
+    Returns None only when Keep answered and has no config for this
+    algorithm. A failed read raises, because the two mean different things.
     """
     try:
         with _client_http(client) as http:
             response = http.get("/ai/stats")
             response.raise_for_status()
             payload = response.json()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning("could not read correlation config", exc_info=True)
-        return None
+        raise KeepUnreachable(f"could not read settings from Keep: {exc}") from exc
 
     for config in payload.get("algorithm_configs") or []:
         if config.get("algorithm_id") == ALGORITHM_ID:
@@ -122,7 +136,10 @@ def fetch_settings(client: CorrelationClient) -> dict[str, Any]:
     stored config — running with defaults beats not running at all, and the
     defaults are the conservative end of every range.
     """
-    return settings_from_config(fetch_config(client))
+    try:
+        return settings_from_config(fetch_config(client))
+    except KeepUnreachable:
+        return dict(DEFAULT_SETTINGS)
 
 
 def settings_from_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -203,9 +220,12 @@ def fetch_recent_alerts(client: CorrelationClient, window_minutes: float) -> lis
             response = http.get("/alerts", params={"limit": 500})
             response.raise_for_status()
             payload = response.json()
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.warning("could not read alerts for correlation", exc_info=True)
-        return []
+        # Not an empty history. Reporting "analysed 0 alerts, nothing
+        # repeated" for a failed read tells the operator their system is
+        # quiet at exactly the moment the analysis has gone blind.
+        raise KeepUnreachable(f"could not read alerts from Keep: {exc}") from exc
 
     alerts = payload if isinstance(payload, list) else payload.get("items") or []
     fresh: list[dict[str, Any]] = []
@@ -390,9 +410,27 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     proposals. Incidents are created only by Keep's rules engine, and only
     once an operator accepts a proposal.
     """
-    config = fetch_config(client)
-    settings = settings_from_config(config)
     started = _utcnow()
+    try:
+        config = fetch_config(client)
+    except KeepUnreachable as exc:
+        logger.warning(
+            "correlation skipped, Keep unreadable",
+            extra={"tenant_id": client.tenant_id, "error": str(exc)},
+        )
+        # Best effort: if Keep is wholly down this write fails too and the
+        # page keeps its last message, which is still better than a fresh
+        # message that is wrong.
+        report_execution(
+            client,
+            None,
+            f"{started:%Y-%m-%d %H:%M UTC} — could not read settings from Keep, "
+            "so no analysis ran. This is a connectivity problem, not a result: "
+            "nothing here says anything about your alerts.",
+        )
+        return {"groups": 0, "proposed": 0}
+
+    settings = settings_from_config(config)
 
     if not settings.get("Enabled"):
         logger.info(
@@ -412,7 +450,21 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     window = settings["Correlation Window (minutes)"]
     # Look back far enough to see a pattern repeat — a single grouping is
     # a coincidence, and the whole point is to only propose what recurs.
-    alerts = fetch_recent_alerts(client, window * HISTORY_WINDOWS)
+    try:
+        alerts = fetch_recent_alerts(client, window * HISTORY_WINDOWS)
+    except KeepUnreachable as exc:
+        logger.warning(
+            "correlation skipped, alert history unreadable",
+            extra={"tenant_id": client.tenant_id, "error": str(exc)},
+        )
+        report_execution(
+            client,
+            config,
+            f"{started:%Y-%m-%d %H:%M UTC} — could not read the alert history "
+            "from Keep, so no analysis ran. This is a connectivity problem, "
+            "not a result: it does not mean your alerts are quiet.",
+        )
+        return {"groups": 0, "proposed": 0}
 
     groups = group_alerts(
         alerts,

@@ -109,5 +109,8 @@ def deterministic_rca(incident: dict, evidence: list, knowledge: list) -> dict:
         knowledge=knowledge,
         citations=citations,
         investigation_id=str(incident.get("investigation_id") or ""),
+        # This is the whole point of this module: no model ran. Saying
+        # otherwise let template-ranked hypotheses be read as reasoning.
+        ai_assisted=False,
     )
     return {"hypotheses": hypotheses, "draft": draft, "citations": citations}
