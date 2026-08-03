@@ -406,6 +406,159 @@ def test_proposals_are_ordered_by_strength_of_evidence():
 
 
 # --------------------------------------------------------------------------- #
+# Wording — the LLM writes, it does not decide
+# --------------------------------------------------------------------------- #
+
+
+def _two_recurring_groups():
+    return grouped([alert("5xx", minute=0), alert("latency", minute=1)]) + grouped(
+        [alert("5xx b", minute=0), alert("latency b", minute=1)]
+    )
+
+
+def _configured(monkeypatch, reply: str, captured: dict | None = None):
+    """A configured model that answers with `reply`.
+
+    `apply_wording` imports both litellm and the config lookup inside the
+    function, so both are patched where they are looked up rather than
+    where they are defined.
+    """
+    import sys
+    import types
+
+    class _Response:
+        choices = [types.SimpleNamespace(message=types.SimpleNamespace(content=reply))]
+
+    def _completion(**kwargs):
+        if captured is not None:
+            captured.update(kwargs)
+        return _Response()
+
+    module = types.ModuleType("litellm")
+    module.completion = _completion
+    monkeypatch.setitem(sys.modules, "litellm", module)
+    monkeypatch.setattr(
+        "aiops_api.modules.config.get_effective_config",
+        lambda _t: types.SimpleNamespace(
+            llm_model="deepseek/deepseek-v4-pro", llm_api_key="k"
+        ),
+    )
+
+
+def test_wording_never_changes_what_the_rule_matches(monkeypatch):
+    """The model names the pattern; the CEL, grouping and evidence counts
+    are decided by scoring and must survive untouched."""
+    from aiops_api.modules.correlation.wording import apply_wording
+
+    _configured(monkeypatch, '{"name": "Payments error spike", "summary": "Groups payment failures."}')
+    proposal = _proposals(_two_recurring_groups())[0]
+    before = (proposal.cel, list(proposal.grouping_criteria), proposal.occurrences, proposal.alerts_covered)
+
+    apply_wording([proposal], "t1")
+
+    assert (proposal.cel, list(proposal.grouping_criteria), proposal.occurrences, proposal.alerts_covered) == before
+    assert proposal.name == "Payments error spike"
+
+
+def test_computed_evidence_still_leads_the_rationale(monkeypatch):
+    """A hallucinated count is indistinguishable from a real one, so the
+    numbers stay computed and come first."""
+    from aiops_api.modules.correlation.wording import apply_wording
+
+    _configured(monkeypatch, '{"name": "Payments", "summary": "Useful prose."}')
+    proposal = _proposals(_two_recurring_groups())[0]
+
+    apply_wording([proposal], "t1")
+
+    assert proposal.rationale.startswith("Seen 2 times covering 4 alerts.")
+    assert "Useful prose." in proposal.rationale
+    assert proposal.rationale.endswith("Useful prose.")
+
+
+def test_a_model_name_that_could_break_keep_is_refused(monkeypatch):
+    """The name is handed to Keep as ruleName; model output is untrusted."""
+    from aiops_api.modules.correlation.wording import apply_wording
+
+    _configured(monkeypatch, '{"name": "bad\\" || true || \\"", "summary": "ok"}')
+    proposal = _proposals(_two_recurring_groups())[0]
+
+    apply_wording([proposal], "t1")
+
+    assert proposal.name == "payment-api correlation"
+
+
+def test_no_model_configured_keeps_deterministic_wording(monkeypatch):
+    """Deterministic wording is the product, not a degraded mode."""
+    import types
+
+    from aiops_api.modules.correlation import wording
+
+    monkeypatch.setattr(
+        "aiops_api.modules.config.get_effective_config",
+        lambda _t: types.SimpleNamespace(llm_model=None, llm_api_key=None),
+    )
+    monkeypatch.setattr(
+        "aiops_api.settings.get_settings",
+        lambda: types.SimpleNamespace(llm_model=None),
+    )
+    proposal = _proposals(_two_recurring_groups())[0]
+
+    wording.apply_wording([proposal], "t1")
+
+    assert proposal.name == "payment-api correlation"
+
+
+def test_an_llm_failure_does_not_lose_the_proposal(monkeypatch):
+    """Wording is a nicety; losing it must not lose the rule."""
+    import sys
+    import types
+
+    from aiops_api.modules.correlation.wording import apply_wording
+
+    module = types.ModuleType("litellm")
+
+    def _boom(**kwargs):
+        raise RuntimeError("provider down")
+
+    module.completion = _boom
+    monkeypatch.setitem(sys.modules, "litellm", module)
+    monkeypatch.setattr(
+        "aiops_api.modules.config.get_effective_config",
+        lambda _t: types.SimpleNamespace(llm_model="m", llm_api_key="k"),
+    )
+    proposal = _proposals(_two_recurring_groups())[0]
+
+    apply_wording([proposal], "t1")  # must not raise
+
+    assert proposal.name == "payment-api correlation"
+    assert "Seen 2 times" in proposal.rationale
+
+
+def test_the_prompt_forbids_inventing_counts():
+    """The one thing the model must never do, stated where it will read it."""
+    from aiops_api.modules.correlation.wording import SYSTEM_PROMPT
+
+    assert "Never state counts" in SYSTEM_PROMPT
+    assert "Never claim a root cause" in SYSTEM_PROMPT
+
+
+def test_a_single_occurrence_reads_as_english():
+    """Minimum Occurrences goes down to 1, so "Seen 1 times" reaches users."""
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)])
+
+    rationale = _proposals(groups, min_occurrences=1)[0].rationale
+
+    assert rationale.startswith("Seen 1 time covering 2 alerts.")
+
+
+def test_proposals_carry_alert_names_for_wording():
+    proposal = _proposals(_two_recurring_groups())[0]
+
+    assert "5xx" in proposal.sample_names
+    assert "latency" in proposal.sample_names
+
+
+# --------------------------------------------------------------------------- #
 # Execution logs — what the AI page shows about the last run
 # --------------------------------------------------------------------------- #
 

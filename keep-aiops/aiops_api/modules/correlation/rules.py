@@ -46,6 +46,9 @@ class RuleProposal:
     alerts_covered: int = 0
     # Plain-language justification shown next to the proposal.
     rationale: str = ""
+    # Alert names observed in this pattern. Not part of the rule — only
+    # material for wording it in plain language.
+    sample_names: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, Any]:
         """Body for Keep's POST /rules/from-cel."""
@@ -145,6 +148,12 @@ def propose_rules(
             conditions.append(f"source.contains({source_literal})")
 
         alerts_covered = sum(group.size for group in matched)
+        seen_names: list[str] = []
+        for group in matched:
+            for alert in group.alerts:
+                name = _field(alert, "name")
+                if name and name not in seen_names:
+                    seen_names.append(name)
         proposals.append(
             RuleProposal(
                 name=f"{service} correlation",
@@ -156,12 +165,16 @@ def propose_rules(
                 occurrences=len(matched),
                 alerts_covered=alerts_covered,
                 rationale=(
-                    f"Seen {len(matched)} times covering {alerts_covered} alerts. "
+                    f"Seen {len(matched)} "
+                    f"{'time' if len(matched) == 1 else 'times'} covering "
+                    f"{alerts_covered} "
+                    f"{'alert' if alerts_covered == 1 else 'alerts'}. "
                     f"Alerts on {service}"
                     + (f" from {source}" if source else "")
                     + f" arriving within {int(window_minutes)} minutes were repeatedly "
                     "the same problem."
                 ),
+                sample_names=seen_names,
             )
         )
 

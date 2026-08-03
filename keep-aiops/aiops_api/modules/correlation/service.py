@@ -31,6 +31,7 @@ from aiops_api.modules.correlation.models import (
     _utcnow,
 )
 from aiops_api.modules.correlation.rules import RuleProposal, propose_rules
+from aiops_api.modules.correlation.wording import apply_wording
 
 logger = logging.getLogger(__name__)
 
@@ -415,6 +416,15 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
         groups,
         window_minutes=window,
         min_occurrences=int(settings["Minimum Occurrences"]),
+    )
+    # Word the proposals with the LLM chosen in Settings -> AI Agents. The
+    # model only names and explains: what the rule matches, how often the
+    # pattern recurred and whether it qualified are already decided above,
+    # and stay decided if the model is absent or fails.
+    proposals = apply_wording(
+        proposals,
+        client.tenant_id,
+        {p.cel: p.sample_names for p in proposals},
     )
     stored = store_proposals(client, proposals, settings)
 

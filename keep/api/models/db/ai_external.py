@@ -89,7 +89,14 @@ correlation rules for review. Keep's own rules engine then executes them on the
 ingestion path, with the approval gating, auto-resolution and naming it already
 provides — so there is exactly one thing creating incidents. This only answers the
 question the engine cannot: which rule to write. Runs inside your cluster and
-never creates or modifies an incident itself.""",
+never creates or modifies an incident itself.
+
+Grouping is decided by deterministic scoring, not by a language model: every
+proposal carries the signals that produced it, so a grouping you disagree with
+can be traced to a setting below and tuned. There is no model to choose here.
+If an LLM is configured under Settings → AI Agents it is used only to word the
+proposals — to name the pattern and explain it in plain language. The counts and
+the matching are computed either way.""",
     version=1,
     # Served by the AIOps control plane shipped alongside Keep, so there is
     # no URL for an operator to discover — only whether it should run, which
