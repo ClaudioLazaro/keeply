@@ -196,7 +196,12 @@ def run_investigation(investigation_id: str) -> None:
                 evidence, tracker = _gather_phase(investigation, settings, budget)
                 for item in evidence:
                     session.add(item)
-                _build_and_store_context_pack(investigation, tenant_id, incident_id, settings)
+                context_gap = _build_and_store_context_pack(
+                    investigation, tenant_id, incident_id, settings
+                )
+                if context_gap is not None:
+                    evidence.append(context_gap)
+                    session.add(context_gap)
                 _set_status(session, investigation, "hypothesizing")
                 knowledge_results, knowledge_gap = _query_knowledge_safe(
                     investigation, evidence
@@ -319,19 +324,35 @@ def _set_status(session, investigation: Investigation, status: str) -> None:
 
 def _build_and_store_context_pack(
     investigation: Investigation, tenant_id: str, incident_id: str, settings: Settings
-) -> None:
+) -> Evidence | None:
     """Assemble and persist the M2 context pack during the gathering phase.
 
     Lazy import avoids a module cycle; a context-pack failure must never fail
-    the investigation, so exceptions are swallowed (the builder itself is
+    the investigation, so exceptions are caught (the builder itself is
     already partial-failure tolerant — this guards construction-level bugs).
+
+    Returns a gap when it fails. Without the pack the incident view collapses
+    to bare identifiers — no name, severity, service or alerts — so the model
+    reasons about an incident it knows nothing about and the draft comes back
+    thin but confident. That has to be visible.
     """
     try:
         from aiops_api.modules.context_builder import build_context_pack
 
         investigation.context_pack = build_context_pack(tenant_id, incident_id, settings=settings)
-    except Exception:  # noqa: BLE001
+        return None
+    except Exception as exc:  # noqa: BLE001
         logger.exception("context pack build failed", extra={"investigation_id": investigation.id})
+        return Evidence(
+            investigation_id=investigation.id,
+            tool="context_pack",
+            summary=(
+                "evidence gap — incident context could not be assembled: "
+                f"{type(exc).__name__}: {exc}. The analysis below ran without "
+                "the incident's own details."
+            ),
+            backend="gap",
+        )
 
 # --------------------------------------------------------------------------- #
 # Knowledge retrieval (best-effort; never fails the investigation)

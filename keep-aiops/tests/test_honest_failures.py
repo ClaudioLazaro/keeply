@@ -362,3 +362,69 @@ def test_a_naive_timestamp_is_read_as_utc():
     parsed = alert_time({"lastReceived": "2026-08-02T10:00:00"})
 
     assert parsed == datetime(2026, 8, 2, 10, tzinfo=timezone.utc)
+
+
+def test_unknown_provenance_is_not_called_demo_data():
+    """A tool that answered but did not say whether its data was real is
+    not the same as a tool that returned a canned payload."""
+    from aiops_api.modules.rca.provenance import describe
+
+    sentence = describe([{"backend": "unknown", "id": "e1"}])
+
+    assert "demo data" not in sentence
+    assert "did not say whether their data was real" in sentence
+    assert "must not be used to make incident decisions" in sentence
+
+
+def test_every_zero_live_mix_still_warns():
+    """Whatever the combination, an analysis with no live evidence says so."""
+    from itertools import combinations
+
+    from aiops_api.modules.rca.provenance import describe
+
+    kinds = ["stub", "gap", "unknown"]
+    for size in (1, 2, 3):
+        for combo in combinations(kinds, size):
+            evidence = [{"backend": k, "id": f"e-{k}"} for k in combo]
+            assert "must not be used to make incident decisions" in describe(evidence), combo
+
+
+# --------------------------------------------------------------------------- #
+# Context pack: an RCA about an incident it knows nothing about
+# --------------------------------------------------------------------------- #
+
+
+def test_a_failed_context_pack_surfaces_as_an_evidence_gap(monkeypatch):
+    """Without the pack the incident view is bare ids, so the model reasons
+    about an incident with no name, severity, service or alerts."""
+    from aiops_api.modules.orchestrator import service as orch
+    from aiops_api.modules.orchestrator.models import Investigation
+
+    import aiops_api.modules.context_builder as ctx
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("keep unreachable")
+
+    monkeypatch.setattr(ctx, "build_context_pack", _boom)
+    investigation = Investigation(id="inv-1", tenant_id="t1", incident_id="inc-1")
+
+    gap = orch._build_and_store_context_pack(investigation, "t1", "inc-1", None)
+
+    assert gap is not None
+    assert gap.backend == "gap"
+    assert "incident context could not be assembled" in gap.summary
+
+
+def test_a_successful_context_pack_reports_no_gap(monkeypatch):
+    from aiops_api.modules.orchestrator import service as orch
+    from aiops_api.modules.orchestrator.models import Investigation
+
+    import aiops_api.modules.context_builder as ctx
+
+    monkeypatch.setattr(ctx, "build_context_pack", lambda *a, **k: {"incident": {"name": "x"}})
+    investigation = Investigation(id="inv-1", tenant_id="t1", incident_id="inc-1")
+
+    gap = orch._build_and_store_context_pack(investigation, "t1", "inc-1", None)
+
+    assert gap is None
+    assert investigation.context_pack == {"incident": {"name": "x"}}

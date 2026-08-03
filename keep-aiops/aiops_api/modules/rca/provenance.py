@@ -64,6 +64,40 @@ def tally(evidence: list[Any]) -> dict[str, int]:
     return counts
 
 
+_DO_NOT_DECIDE = " and this must not be used to make incident decisions."
+
+
+def _zero_live_reason(counts: dict[str, int], stub: int, gap: int, unknown: int) -> str:
+    """Why an analysis with no live evidence is untrustworthy, accurately.
+
+    Every branch here says something specific about where the evidence came
+    from, so none of them may be the default. Falling through to the demo
+    -data wording described tool results of unknown provenance as demo
+    data, which is a different — and unfounded — claim.
+    """
+    if not counts:
+        return (
+            "No evidence was collected at all — nothing here was checked "
+            "against your systems," + _DO_NOT_DECIDE
+        )
+    if gap and not stub and not unknown:
+        return "Every evidence-gathering call failed — nothing was verified," + _DO_NOT_DECIDE
+    if stub and not unknown:
+        return (
+            "No live evidence was collected — this analysis rests entirely on "
+            "demo data" + _DO_NOT_DECIDE
+        )
+    if unknown and not stub:
+        return (
+            "No live evidence was collected — the tools that answered did not "
+            "say whether their data was real," + _DO_NOT_DECIDE
+        )
+    return (
+        "No live evidence was collected — nothing here was confirmed against "
+        "your systems," + _DO_NOT_DECIDE
+    )
+
+
 def describe(evidence: list[Any]) -> str:
     """One-line provenance sentence for the draft summary.
 
@@ -87,22 +121,7 @@ def describe(evidence: list[Any]) -> str:
     # built on demo data — yet those two said nothing at all while a single
     # stub item produced a bold warning.
     if live == 0:
-        if not counts:
-            sentence += (
-                " **No evidence was collected at all — nothing here was checked"
-                " against your systems, and this must not be used to make"
-                " incident decisions.**"
-            )
-        elif stub == 0 and gap:
-            sentence += (
-                " **Every evidence-gathering call failed — nothing was verified,"
-                " and this must not be used to make incident decisions.**"
-            )
-        else:
-            sentence += (
-                " **No live evidence was collected — this analysis rests entirely on"
-                " demo data and must not be used to make incident decisions.**"
-            )
+        sentence += f" **{_zero_live_reason(counts, stub, gap, unknown)}**"
     elif stub:
         sentence += " Hypotheses supported only by stub evidence are marked unverified."
     return sentence
