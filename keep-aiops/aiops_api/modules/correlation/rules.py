@@ -139,7 +139,10 @@ def propose_rules(
         conditions = [f"service == {service_literal}"]
         source_literal = _cel_literal(source) if source else None
         if source_literal:
-            conditions.append(f"source == {source_literal}")
+            # `source` arrives as a list (["prometheus"]), so equality
+            # against a string never matches and produces a rule that
+            # silently never fires. `contains` is the list-safe form.
+            conditions.append(f"source.contains({source_literal})")
 
         alerts_covered = sum(group.size for group in matched)
         proposals.append(

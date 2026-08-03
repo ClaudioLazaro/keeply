@@ -322,6 +322,21 @@ def test_a_recurring_pattern_becomes_a_proposal():
     assert "service == 'payment-api'" in proposals[0].cel
 
 
+def test_source_uses_contains_because_alerts_carry_a_list():
+    """`source` is a list on the alert, so `source == 'x'` never matches and
+    would produce a rule that silently never fires."""
+    groups = grouped(
+        [alert("5xx", minute=0), alert("latency", minute=1)]
+    ) + grouped(
+        [alert("5xx b", minute=0), alert("latency b", minute=1)]
+    )
+
+    cel = _proposals(groups)[0].cel
+
+    assert "source.contains('prometheus')" in cel
+    assert "source == " not in cel
+
+
 def test_proposal_groups_by_service_so_one_rule_is_not_one_incident():
     groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 2
 
