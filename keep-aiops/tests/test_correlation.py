@@ -574,14 +574,26 @@ def test_a_run_that_found_nothing_still_says_it_ran():
     assert "2026-08-02 10:00 UTC" in summary
 
 
-def test_groups_found_but_nothing_proposed_explains_why():
+def test_groups_found_but_nothing_qualified_blames_the_threshold():
     from aiops_api.modules.correlation.service import _summarise
 
     groups = grouped([alert("a", minute=0), alert("b", minute=1)])
-    summary = _summarise(BASE, [{}, {}], groups, stored=0, pending=0)
+    summary = _summarise(BASE, [{}, {}], groups, stored=0, pending=0, qualified=0)
 
     assert "found 1 correlated group" in summary
     assert "Minimum Occurrences" in summary
+
+
+def test_a_steady_state_does_not_read_as_a_failure():
+    """Patterns that still hold, already proposed, are the normal case on
+    every run after the first — blaming the threshold would be wrong."""
+    from aiops_api.modules.correlation.service import _summarise
+
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)])
+    summary = _summarise(BASE, [{}, {}], groups, stored=0, pending=3, qualified=3)
+
+    assert "already proposed on an earlier run" in summary
+    assert "Minimum Occurrences" not in summary
 
 
 def test_summary_points_at_the_decision_waiting_in_rules():

@@ -337,6 +337,7 @@ def _summarise(
     groups: list[CorrelationGroup],
     stored: int,
     pending: int,
+    qualified: int | None = None,
 ) -> str:
     """A plain-language account of one pass, for the AI page.
 
@@ -351,11 +352,18 @@ def _summarise(
 
     if stored:
         lines.append(f"Proposed {stored} new correlation rule(s).")
+    elif qualified:
+        # A steady state, not a problem: the patterns still hold and their
+        # proposals are already waiting. Saying only "nothing proposed"
+        # would read as a failure.
+        lines.append(
+            f"Nothing new: the {qualified} qualifying pattern(s) found were "
+            "already proposed on an earlier run."
+        )
     elif groups:
         lines.append(
-            "No new rules proposed: these groupings either did not recur "
-            "often enough to clear Minimum Occurrences, or were already "
-            "proposed on an earlier run."
+            "No new rules proposed: none of these groupings recurred often "
+            "enough to clear Minimum Occurrences."
         )
     else:
         lines.append(
@@ -441,7 +449,11 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
             ).all()
         )
 
-    report_execution(client, config, _summarise(started, alerts, groups, stored, pending))
+    report_execution(
+        client,
+        config,
+        _summarise(started, alerts, groups, stored, pending, qualified=len(proposals)),
+    )
 
     logger.info(
         "correlation analysis complete",
