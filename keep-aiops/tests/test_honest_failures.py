@@ -168,3 +168,197 @@ def test_a_successful_empty_search_reports_no_gap(monkeypatch):
 
     assert results == []
     assert gap is None
+
+
+# --------------------------------------------------------------------------- #
+# Provenance: the weakest analyses must not be the quietest ones
+# --------------------------------------------------------------------------- #
+
+
+def test_collecting_nothing_at_all_is_warned_about():
+    """Zero evidence is weaker than demo data, yet it was the only case
+    that produced no warning."""
+    from aiops_api.modules.rca.provenance import describe
+
+    sentence = describe([])
+
+    assert "No evidence was collected at all" in sentence
+    assert "must not be used to make incident decisions" in sentence
+
+
+def test_an_all_gap_investigation_is_warned_about():
+    from aiops_api.modules.rca.provenance import describe
+
+    sentence = describe([{"backend": "gap", "id": "e1"}, {"backend": "gap", "id": "e2"}])
+
+    assert "Every evidence-gathering call failed" in sentence
+
+
+def test_stub_only_keeps_its_existing_warning():
+    from aiops_api.modules.rca.provenance import describe
+
+    assert "rests entirely on" in describe([{"backend": "stub", "id": "e1"}])
+
+
+def test_live_evidence_produces_no_alarm():
+    from aiops_api.modules.rca.provenance import describe
+
+    sentence = describe([{"backend": "live", "id": "e1"}])
+
+    assert "must not be used" not in sentence
+
+
+def test_a_caveat_names_the_provenance_it_actually_has():
+    """"stub data only" was printed even when every supporting call had
+    failed and no stub existed."""
+    from aiops_api.modules.rca.provenance import annotate_hypotheses
+
+    evidence = [{"backend": "gap", "id": "e1"}]
+    hypotheses = annotate_hypotheses(
+        [{"title": "x", "confidence": 0.9, "supporting_evidence": ["e1"]}], evidence
+    )
+
+    assert hypotheses[0]["caveat"] == "unverified — every supporting call failed"
+
+
+def test_a_hypothesis_citing_nothing_says_so():
+    from aiops_api.modules.rca.provenance import annotate_hypotheses
+
+    hypotheses = annotate_hypotheses(
+        [{"title": "x", "confidence": 0.9, "supporting_evidence": []}], []
+    )
+
+    assert hypotheses[0]["caveat"] == "unverified — no evidence cited"
+
+
+def test_stub_backed_hypotheses_keep_the_original_label():
+    from aiops_api.modules.rca.provenance import annotate_hypotheses
+
+    hypotheses = annotate_hypotheses(
+        [{"title": "x", "confidence": 0.9, "supporting_evidence": ["e1"]}],
+        [{"backend": "stub", "id": "e1"}],
+    )
+
+    assert hypotheses[0]["caveat"] == "unverified — stub data only"
+    assert hypotheses[0]["confidence"] == 0.36
+
+
+def test_mixed_stub_and_gap_support_claims_neither():
+    from aiops_api.modules.rca.provenance import annotate_hypotheses
+
+    hypotheses = annotate_hypotheses(
+        [{"title": "x", "confidence": 0.5, "supporting_evidence": ["e1", "e2"]}],
+        [{"backend": "stub", "id": "e1"}, {"backend": "gap", "id": "e2"}],
+    )
+
+    assert hypotheses[0]["caveat"] == "unverified — no live evidence"
+
+
+# --------------------------------------------------------------------------- #
+# Grouping: a runaway group is a finding, not a non-event
+# --------------------------------------------------------------------------- #
+
+
+def test_oversized_groups_are_reported_not_just_dropped():
+    """A group that blew past the cap is the clearest sign the thresholds
+    are wrong; dropping it silently reported the run as quiet."""
+    from datetime import datetime, timedelta, timezone
+
+    from aiops_api.modules.correlation.grouping import group_alerts
+
+    base = datetime(2026, 8, 2, 10, tzinfo=timezone.utc)
+    alerts = [
+        {
+            "name": f"symptom {i}",
+            "service": "payment-api",
+            "source": ["prometheus"],
+            "fingerprint": f"fp-{i}",
+            "lastReceived": (base + timedelta(seconds=i * 10)).isoformat(),
+        }
+        for i in range(12)
+    ]
+
+    result = group_alerts(
+        alerts, window_minutes=10, similarity_threshold=0.4, max_group_size=5
+    )
+
+    assert result == []  # nothing usable survived
+    assert result.oversized, "the runaway group must still be visible"
+    assert result.oversized[0].size == 12
+
+
+def test_the_summary_names_a_runaway_group():
+    from datetime import datetime, timezone
+
+    from aiops_api.modules.correlation.grouping import GroupingResult, CorrelationGroup
+    from aiops_api.modules.correlation.service import _summarise
+
+    groups = GroupingResult()
+    groups.oversized = [CorrelationGroup(alerts=[{}] * 40)]
+
+    summary = _summarise(
+        datetime(2026, 8, 2, 10, tzinfo=timezone.utc), [{}], groups, 0, 0, qualified=0
+    )
+
+    assert "exceeded Max Alerts Per Incident" in summary
+    assert "largest: 40 alerts" in summary
+
+
+def test_a_normal_run_says_nothing_about_oversized_groups():
+    from datetime import datetime, timezone
+
+    from aiops_api.modules.correlation.grouping import GroupingResult
+    from aiops_api.modules.correlation.service import _summarise
+
+    summary = _summarise(
+        datetime(2026, 8, 2, 10, tzinfo=timezone.utc), [{}], GroupingResult(), 1, 1, qualified=1
+    )
+
+    assert "exceeded" not in summary
+
+
+# --------------------------------------------------------------------------- #
+# Timestamps: one bad alert must not take down the whole run
+# --------------------------------------------------------------------------- #
+
+
+def test_a_naive_timestamp_does_not_break_grouping():
+    """Mixing naive and aware datetimes raises on subtraction, and grouping
+    sorts across the whole batch — so one such alert failed every alert."""
+    from datetime import datetime, timedelta, timezone
+
+    from aiops_api.modules.correlation.grouping import group_alerts
+
+    base = datetime(2026, 8, 2, 10, tzinfo=timezone.utc)
+    aware = {
+        "name": "5xx rate",
+        "service": "payment-api",
+        "source": ["prometheus"],
+        "fingerprint": "fp-1",
+        "lastReceived": base.isoformat(),
+    }
+    naive = {
+        "name": "latency",
+        "service": "payment-api",
+        "source": ["prometheus"],
+        "fingerprint": "fp-2",
+        # no offset — what a provider emitting local time looks like
+        "lastReceived": (base + timedelta(minutes=1)).replace(tzinfo=None).isoformat(),
+    }
+
+    groups = group_alerts(
+        [aware, naive], window_minutes=10, similarity_threshold=0.4, max_group_size=20
+    )
+
+    assert len(groups) == 1
+    assert groups[0].size == 2
+
+
+def test_a_naive_timestamp_is_read_as_utc():
+    from datetime import datetime, timezone
+
+    from aiops_api.modules.correlation.similarity import alert_time
+
+    parsed = alert_time({"lastReceived": "2026-08-02T10:00:00"})
+
+    assert parsed == datetime(2026, 8, 2, 10, tzinfo=timezone.utc)

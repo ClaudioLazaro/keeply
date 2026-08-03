@@ -26,6 +26,13 @@ GAP = "gap"
 # most of its confidence: the pattern matched, but only against demo data.
 UNCORROBORATED_CONFIDENCE_FACTOR = 0.4
 UNCORROBORATED_LABEL = "unverified — stub data only"
+# The caveat names where the support actually came from. A single label
+# claimed "stub data only" even for a hypothesis whose every supporting
+# call had failed, which is a false statement about provenance in the one
+# place an operator looks to judge it.
+NO_EVIDENCE_LABEL = "unverified — no evidence cited"
+FAILED_EVIDENCE_LABEL = "unverified — every supporting call failed"
+NO_LIVE_LABEL = "unverified — no live evidence"
 
 
 def evidence_backend(item: Any) -> str:
@@ -74,11 +81,28 @@ def describe(evidence: list[Any]) -> str:
     if unknown:
         parts.append(f"{unknown} unknown provenance")
     sentence = "Evidence provenance: " + ", ".join(parts) + "."
-    if stub and live == 0:
-        sentence += (
-            " **No live evidence was collected — this analysis rests entirely on"
-            " demo data and must not be used to make incident decisions.**"
-        )
+
+    # Warn on every zero-live case, not just the stub one. An investigation
+    # that collected nothing, or whose every call failed, is weaker than one
+    # built on demo data — yet those two said nothing at all while a single
+    # stub item produced a bold warning.
+    if live == 0:
+        if not counts:
+            sentence += (
+                " **No evidence was collected at all — nothing here was checked"
+                " against your systems, and this must not be used to make"
+                " incident decisions.**"
+            )
+        elif stub == 0 and gap:
+            sentence += (
+                " **Every evidence-gathering call failed — nothing was verified,"
+                " and this must not be used to make incident decisions.**"
+            )
+        else:
+            sentence += (
+                " **No live evidence was collected — this analysis rests entirely on"
+                " demo data and must not be used to make incident decisions.**"
+            )
     elif stub:
         sentence += " Hypotheses supported only by stub evidence are marked unverified."
     return sentence
@@ -93,7 +117,8 @@ def annotate_hypotheses(
     (UI, eval harness) do not have to re-derive it. Confidence is only ever
     reduced — never inflated.
     """
-    live_ids = {item_id(item) for item in evidence if evidence_backend(item) == LIVE}
+    backends = {item_id(item): evidence_backend(item) for item in evidence}
+    live_ids = {eid for eid, backend in backends.items() if backend == LIVE}
 
     for hypothesis in hypotheses:
         supporting = list(hypothesis.get("supporting_evidence") or [])
@@ -103,5 +128,22 @@ def annotate_hypotheses(
             hypothesis["confidence"] = round(
                 float(hypothesis.get("confidence", 0.0)) * UNCORROBORATED_CONFIDENCE_FACTOR, 2
             )
-            hypothesis["caveat"] = UNCORROBORATED_LABEL
+            hypothesis["caveat"] = _caveat_for(supporting, backends)
     return hypotheses
+
+
+def _caveat_for(supporting: list[str], backends: dict[str, str]) -> str:
+    """Name why a hypothesis is unverified, accurately.
+
+    The label appears next to a discounted confidence score and is the one
+    place an operator reads to judge what the number is worth, so it must
+    describe the evidence that actually exists.
+    """
+    if not supporting:
+        return NO_EVIDENCE_LABEL
+    kinds = {backends.get(eid, "unknown") for eid in supporting}
+    if kinds == {STUB}:
+        return UNCORROBORATED_LABEL
+    if kinds == {GAP}:
+        return FAILED_EVIDENCE_LABEL
+    return NO_LIVE_LABEL

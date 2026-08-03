@@ -112,8 +112,23 @@ def group_alerts(
     # Oversized groups are dropped, not trimmed: picking which alerts to
     # keep would be arbitrary, and the operator needs to see that the
     # thresholds let something run away.
-    return [
-        group
-        for group in groups
-        if 2 <= group.size <= max_group_size
-    ]
+    kept = GroupingResult(group for group in groups if 2 <= group.size <= max_group_size)
+    kept.oversized = [group for group in groups if group.size > max_group_size]
+    return kept
+
+
+class GroupingResult(list):
+    """The groups that survived, plus the ones that were too big.
+
+    A plain list of survivors made the drop invisible: a runaway group is
+    the clearest signal the thresholds are wrong, and it was being reported
+    to the operator as "nothing in the history repeated closely enough".
+    Subclassing list keeps every existing caller and comparison working
+    while carrying that fact alongside.
+    """
+
+    oversized: list[CorrelationGroup] = []
+
+    def __init__(self, iterable=()):
+        super().__init__(iterable)
+        self.oversized = []

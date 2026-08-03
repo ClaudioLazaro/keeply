@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 # Weights sum to 1.0 so the score reads as a probability-ish number in the
@@ -92,16 +92,27 @@ def _jaccard(left: set[str], right: set[str]) -> float:
 
 
 def alert_time(alert: Any) -> datetime | None:
-    """Best-effort arrival time; alerts without one cannot be windowed."""
+    """Best-effort arrival time, always timezone-aware.
+
+    Naive values are read as UTC, which is what Keep stores. Returning them
+    as-is meant one provider emitting a timestamp without an offset made
+    every comparison against an aware one raise, and since grouping sorts
+    and windows across the whole batch, a single such alert took down the
+    entire tenant's correlation run rather than just being skipped.
+    """
     raw = _get(alert, "lastReceived", "last_received", "timestamp", "created_at")
     if raw is None:
         return None
     if isinstance(raw, datetime):
-        return raw
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
+        parsed = raw
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def similarity(left: Any, right: Any) -> SimilarityScore:

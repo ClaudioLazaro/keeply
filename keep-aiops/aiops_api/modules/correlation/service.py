@@ -391,6 +391,19 @@ def _summarise(
             "enough to justify one."
         )
 
+    oversized = getattr(groups, "oversized", [])
+    if oversized:
+        # The clearest signal the thresholds are wrong, and it used to be
+        # dropped without a word — leaving the run looking merely quiet.
+        biggest = max(group.size for group in oversized)
+        lines.append(
+            f"{len(oversized)} grouping(s) exceeded Max Alerts Per Incident "
+            f"(largest: {biggest} alerts) and were discarded rather than "
+            "trimmed. That usually means Similarity Threshold is too low or "
+            "Correlation Window too wide, not that one incident has that many "
+            "symptoms."
+        )
+
     if pending:
         lines.append(f"{pending} proposal(s) awaiting your decision in Rules.")
 
