@@ -5559,14 +5559,16 @@ def update_extrnal_ai_settings(
             )
             .first()
         )
-        setting.settings = json.dumps(ai_settings.settings)
+        # Both columns are Column(JSON), so SQLAlchemy serialises on write.
+        # The json.dumps that used to be here ran first, storing a JSON
+        # string inside a JSON column — each save nested the value one level
+        # deeper until `settings` came back as text and the AI page could no
+        # longer render its own controls.
+        setting.settings = ai_settings.settings
         setting.feedback_logs = ai_settings.feedback_logs
-        if ai_settings.settings_proposed_by_algorithm is not None:
-            setting.settings_proposed_by_algorithm = json.dumps(
-                ai_settings.settings_proposed_by_algorithm
-            )
-        else:
-            setting.settings_proposed_by_algorithm = None
+        setting.settings_proposed_by_algorithm = (
+            ai_settings.settings_proposed_by_algorithm
+        )
         session.add(setting)
         session.commit()
     return setting

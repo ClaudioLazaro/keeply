@@ -171,6 +171,11 @@ class ExternalAIConfigAndMetadata(SQLModel, table=True):
         external_ai = ExternalAIConfigAndMetadata(
             algorithm_id=algorithm.unique_id,
             tenant_id=tenant_id,
-            settings=json.dumps(algorithm.config_default),
+            # `settings` is a Column(JSON): SQLAlchemy serialises it on the
+            # way in. Calling json.dumps here too stored a JSON string
+            # *inside* a JSON column, so every read came back as text
+            # instead of a list. config_default is already parsed (its
+            # field type is pydantic's Json), so it goes in as-is.
+            settings=algorithm.config_default,
         )
         return external_ai

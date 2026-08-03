@@ -15,6 +15,7 @@ operator reviews in /rules.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -91,6 +92,28 @@ def _client_http(client: CorrelationClient) -> httpx.Client:
     )
 
 
+def fetch_config(client: CorrelationClient) -> dict[str, Any] | None:
+    """This algorithm's whole config row as Keep holds it.
+
+    Returned verbatim rather than reduced to settings, because writing
+    execution logs back means echoing every other field untouched — Keep's
+    update replaces the row wholesale.
+    """
+    try:
+        with _client_http(client) as http:
+            response = http.get("/ai/stats")
+            response.raise_for_status()
+            payload = response.json()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read correlation config", exc_info=True)
+        return None
+
+    for config in payload.get("algorithm_configs") or []:
+        if config.get("algorithm_id") == ALGORITHM_ID:
+            return config
+    return None
+
+
 def fetch_settings(client: CorrelationClient) -> dict[str, Any]:
     """The tenant's settings as configured on the AI page.
 
@@ -98,28 +121,73 @@ def fetch_settings(client: CorrelationClient) -> dict[str, Any]:
     stored config — running with defaults beats not running at all, and the
     defaults are the conservative end of every range.
     """
-    settings = dict(DEFAULT_SETTINGS)
-    try:
-        with _client_http(client) as http:
-            response = http.get("/ai/stats")
-            response.raise_for_status()
-            payload = response.json()
-    except Exception:  # noqa: BLE001
-        logger.warning("could not read correlation settings, using defaults", exc_info=True)
-        return settings
+    return settings_from_config(fetch_config(client))
 
-    for config in payload.get("algorithm_configs") or []:
-        if config.get("algorithm_id") != ALGORITHM_ID:
+
+def settings_from_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Read the setting values out of a config row, ignoring anything the
+    algorithm does not understand."""
+    settings = dict(DEFAULT_SETTINGS)
+    if not config:
+        return settings
+    for item in config.get("settings") or []:
+        name, value = item.get("name"), item.get("value")
+        if name not in settings:
             continue
-        for item in config.get("settings") or []:
-            name, value = item.get("name"), item.get("value")
-            if name not in settings:
-                continue
-            if isinstance(value, bool):
-                settings[name] = value
-            elif isinstance(value, (int, float)):
-                settings[name] = float(value)
+        # bool before number: `isinstance(True, int)` is True in Python, so
+        # checking numbers first would turn Enabled into 1.0.
+        if isinstance(value, bool):
+            settings[name] = value
+        elif isinstance(value, (int, float)):
+            settings[name] = float(value)
     return settings
+
+
+def _decoded(value: Any) -> Any:
+    """Unwrap a value that was serialised into JSON text one or more times.
+
+    Returned unchanged when it is not JSON text, so a genuine string field
+    stays a string.
+    """
+    while isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            break
+    return value
+
+
+def report_execution(client: CorrelationClient, config: dict[str, Any] | None, message: str) -> None:
+    """Write what this pass did back onto Keep's AI page.
+
+    Without this the page reads "Algorithm not executed yet" forever, which
+    is indistinguishable from the plugin being broken — the operator has no
+    way to tell a correlator that found nothing from one that never ran.
+
+    The config is re-read immediately before writing rather than reused from
+    the start of the run: Keep replaces the whole row, so a settings change
+    made while the analysis was in flight would otherwise be silently
+    reverted. Re-reading narrows that window to the width of one request.
+    Never raises — failing to write a log must not fail the analysis.
+    """
+    try:
+        fresh = fetch_config(client) or config
+        if not fresh or not fresh.get("id"):
+            logger.warning("no correlation config to report execution onto")
+            return
+        body = dict(fresh)
+        # Echo structured fields as structures. A deployment carrying rows
+        # from the old double-encoding bug hands these back as JSON text;
+        # writing that text straight back would nest it one level deeper
+        # every run. Decoding first makes this pass repair rather than rot.
+        for key in ("settings", "settings_proposed_by_algorithm"):
+            body[key] = _decoded(body.get(key))
+        body["feedback_logs"] = message
+        with _client_http(client) as http:
+            response = http.put(f"/ai/{ALGORITHM_ID}/settings", json=body)
+            response.raise_for_status()
+    except Exception:  # noqa: BLE001
+        logger.warning("could not report correlation execution to Keep", exc_info=True)
 
 
 def fetch_recent_alerts(client: CorrelationClient, window_minutes: float) -> list[dict[str, Any]]:
@@ -262,6 +330,50 @@ def dismiss_suggestion(suggestion_id: str) -> dict[str, Any]:
     return {"status": "dismissed"}
 
 
+def _summarise(
+    started: datetime,
+    alerts: list[dict[str, Any]],
+    groups: list[CorrelationGroup],
+    stored: int,
+    pending: int,
+) -> str:
+    """A plain-language account of one pass, for the AI page.
+
+    The interesting cases are the quiet ones: an operator who sees groups
+    found but nothing proposed should be told it was the recurrence
+    threshold, not left to guess whether the plugin is broken.
+    """
+    lines = [
+        f"{started:%Y-%m-%d %H:%M UTC} — analysed {len(alerts)} alerts, "
+        f"found {len(groups)} correlated group(s)."
+    ]
+
+    if stored:
+        lines.append(f"Proposed {stored} new correlation rule(s).")
+    elif groups:
+        lines.append(
+            "No new rules proposed: these groupings either did not recur "
+            "often enough to clear Minimum Occurrences, or were already "
+            "proposed on an earlier run."
+        )
+    else:
+        lines.append(
+            "No new rules proposed: nothing in the history repeated closely "
+            "enough to justify one."
+        )
+
+    if pending:
+        lines.append(f"{pending} proposal(s) awaiting your decision in Rules.")
+
+    # Correlation never creates incidents itself; saying so here stops the
+    # page from being read as "this thing is merging my alerts".
+    lines.append(
+        "This analysis only proposes rules — incidents are created by Keep's "
+        "rules engine once you accept one."
+    )
+    return "\n".join(lines)
+
+
 def run_for_client(client: CorrelationClient) -> dict[str, int]:
     """One analysis pass for one tenant. Never raises.
 
@@ -269,12 +381,22 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     proposals. Incidents are created only by Keep's rules engine, and only
     once an operator accepts a proposal.
     """
-    settings = fetch_settings(client)
+    config = fetch_config(client)
+    settings = settings_from_config(config)
+    started = _utcnow()
 
     if not settings.get("Enabled"):
         logger.info(
             "correlation analysis disabled for tenant, skipping",
             extra={"tenant_id": client.tenant_id},
+        )
+        # Say so on the page. "Disabled" and "never ran" look identical to
+        # an operator otherwise, and only one of them is a problem.
+        report_execution(
+            client,
+            config,
+            f"{started:%Y-%m-%d %H:%M UTC} — correlation is switched off. "
+            "Turn on Enabled above to start analysing alert history.",
         )
         return {"groups": 0, "proposed": 0}
 
@@ -301,6 +423,15 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
         if current is not None:
             current.last_run_at = _utcnow()
             session.add(current)
+        pending = len(
+            session.exec(
+                select(RuleSuggestion)
+                .where(RuleSuggestion.tenant_id == client.tenant_id)
+                .where(RuleSuggestion.status == "pending")
+            ).all()
+        )
+
+    report_execution(client, config, _summarise(started, alerts, groups, stored, pending))
 
     logger.info(
         "correlation analysis complete",

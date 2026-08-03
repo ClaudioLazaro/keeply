@@ -405,6 +405,211 @@ def test_proposals_are_ordered_by_strength_of_evidence():
     )
 
 
+# --------------------------------------------------------------------------- #
+# Execution logs — what the AI page shows about the last run
+# --------------------------------------------------------------------------- #
+
+
+def test_a_run_that_found_nothing_still_says_it_ran():
+    """"Algorithm not executed yet" and "ran, found nothing" look identical
+    to an operator, and only one of them means something is broken."""
+    from aiops_api.modules.correlation.service import _summarise
+
+    summary = _summarise(BASE, [], [], stored=0, pending=0)
+
+    assert "analysed 0 alerts" in summary
+    assert "2026-08-02 10:00 UTC" in summary
+
+
+def test_groups_found_but_nothing_proposed_explains_why():
+    from aiops_api.modules.correlation.service import _summarise
+
+    groups = grouped([alert("a", minute=0), alert("b", minute=1)])
+    summary = _summarise(BASE, [{}, {}], groups, stored=0, pending=0)
+
+    assert "found 1 correlated group" in summary
+    assert "Minimum Occurrences" in summary
+
+
+def test_summary_points_at_the_decision_waiting_in_rules():
+    from aiops_api.modules.correlation.service import _summarise
+
+    summary = _summarise(BASE, [{}], [], stored=1, pending=3)
+
+    assert "Proposed 1 new correlation rule" in summary
+    assert "3 proposal(s) awaiting your decision" in summary
+
+
+def test_summary_says_correlation_does_not_create_incidents():
+    """The page must not read as "this is merging my alerts" — it proposes."""
+    from aiops_api.modules.correlation.service import _summarise
+
+    assert "rules engine" in _summarise(BASE, [], [], stored=0, pending=0)
+
+
+def test_reporting_logs_preserves_every_other_field(monkeypatch):
+    """Keep replaces the config row wholesale, so writing a log while
+    echoing anything stale would silently revert the operator's settings."""
+    from aiops_api.modules.correlation import service
+    from aiops_api.modules.correlation.models import CorrelationClient
+
+    stored_config = {
+        "id": "cfg-1",
+        "algorithm_id": service.ALGORITHM_ID,
+        "tenant_id": "t1",
+        "settings": [{"name": "Enabled", "value": True}],
+        "settings_proposed_by_algorithm": None,
+        "feedback_logs": None,
+        "algorithm": {"name": "Keeply Alert Correlation"},
+    }
+    sent: dict = {}
+
+    class _Response:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class _Http:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def put(self, url, json):
+            sent["url"] = url
+            sent["body"] = json
+            return _Response()
+
+    monkeypatch.setattr(service, "fetch_config", lambda _c: dict(stored_config))
+    monkeypatch.setattr(service, "_client_http", lambda _c: _Http())
+    client = CorrelationClient(tenant_id="t1", back_api_url="http://keep.test", back_api_key="k")
+
+    service.report_execution(client, None, "ran fine")
+
+    assert sent["body"]["feedback_logs"] == "ran fine"
+    # Everything else must survive untouched.
+    assert sent["body"]["settings"] == stored_config["settings"]
+    assert sent["body"]["id"] == "cfg-1"
+
+
+def test_reporting_repairs_double_encoded_settings_instead_of_deepening_them(monkeypatch):
+    """Rows written by the old json.dumps-into-a-JSON-column bug come back
+    as text. Echoing that text verbatim nests it one level deeper on every
+    run, until the AI page cannot render its own controls."""
+    import json as _json
+
+    from aiops_api.modules.correlation import service
+    from aiops_api.modules.correlation.models import CorrelationClient
+
+    real_settings = [{"name": "Enabled", "value": True}]
+    corrupted = {"id": "cfg-1", "settings": _json.dumps(_json.dumps(real_settings))}
+    sent: dict = {}
+
+    class _Response:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class _Http:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def put(self, url, json):
+            sent["body"] = json
+            return _Response()
+
+    monkeypatch.setattr(service, "fetch_config", lambda _c: dict(corrupted))
+    monkeypatch.setattr(service, "_client_http", lambda _c: _Http())
+    client = CorrelationClient(tenant_id="t1", back_api_url="http://keep.test", back_api_key="k")
+
+    service.report_execution(client, None, "ran fine")
+
+    assert sent["body"]["settings"] == real_settings
+
+
+def test_decoding_leaves_ordinary_strings_alone():
+    """feedback_logs is genuine prose, not JSON — it must survive intact."""
+    from aiops_api.modules.correlation.service import _decoded
+
+    assert _decoded("analysed 3 alerts") == "analysed 3 alerts"
+    assert _decoded(None) is None
+    assert _decoded([{"a": 1}]) == [{"a": 1}]
+
+
+def test_reporting_rereads_config_so_a_concurrent_edit_is_not_reverted(monkeypatch):
+    """Settings can change while the analysis is in flight. Echoing the
+    copy read at the start would roll that edit back."""
+    from aiops_api.modules.correlation import service
+    from aiops_api.modules.correlation.models import CorrelationClient
+
+    stale = {"id": "cfg-1", "settings": [{"name": "Enabled", "value": True}]}
+    current = {"id": "cfg-1", "settings": [{"name": "Enabled", "value": False}]}
+    sent: dict = {}
+
+    class _Response:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    class _Http:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def put(self, url, json):
+            sent["body"] = json
+            return _Response()
+
+    monkeypatch.setattr(service, "fetch_config", lambda _c: dict(current))
+    monkeypatch.setattr(service, "_client_http", lambda _c: _Http())
+    client = CorrelationClient(tenant_id="t1", back_api_url="http://keep.test", back_api_key="k")
+
+    service.report_execution(client, stale, "ran fine")
+
+    assert sent["body"]["settings"] == current["settings"]
+
+
+def test_a_failed_report_does_not_fail_the_analysis(monkeypatch):
+    """The log is a nicety; losing it must not lose the run."""
+    from aiops_api.modules.correlation import service
+    from aiops_api.modules.correlation.models import CorrelationClient
+
+    def _boom(_c):
+        raise RuntimeError("keep is down")
+
+    monkeypatch.setattr(service, "fetch_config", _boom)
+    client = CorrelationClient(tenant_id="t1", back_api_url="http://keep.test", back_api_key="k")
+
+    service.report_execution(client, None, "ran fine")  # must not raise
+
+
+def test_a_disabled_tenant_reports_that_it_is_off_not_silence(monkeypatch):
+    from aiops_api.modules.correlation import service
+    from aiops_api.modules.correlation.models import CorrelationClient
+
+    reported: list[str] = []
+    monkeypatch.setattr(service, "fetch_config", lambda _c: {"id": "cfg-1"})
+    monkeypatch.setattr(
+        service,
+        "report_execution",
+        lambda _c, _cfg, message: reported.append(message),
+    )
+    monkeypatch.setattr(
+        service, "settings_from_config", lambda _cfg: {**service.DEFAULT_SETTINGS, "Enabled": False}
+    )
+    client = CorrelationClient(tenant_id="t1", back_api_url="http://keep.test", back_api_key="k")
+
+    service.run_for_client(client)
+
+    assert reported and "switched off" in reported[0]
+
+
 def test_payload_gates_the_generated_rule_behind_approval():
     """A generated rule's first incidents are candidates a human confirms."""
     groups = grouped([alert("a", minute=0), alert("b", minute=1)]) * 2
