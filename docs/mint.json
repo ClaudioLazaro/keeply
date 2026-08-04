@@ -84,7 +84,10 @@
         "aiops/STATUS",
         {
           "group": "RFC",
-          "pages": ["aiops/rfc/0001-keep-evolved-capabilities"]
+          "pages": [
+            "aiops/rfc/0001-keep-evolved-capabilities",
+            "aiops/rfc/0002-keeply-v2-rebuild"
+          ]
         },
         {
           "group": "PRD",
