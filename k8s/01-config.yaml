@@ -52,7 +52,11 @@ metadata:
   name: keep-env
   namespace: keeply
 data:
-  AUTH_TYPE: "NO_AUTH"
+  # Keep's native username/password identity manager: the backend serves
+  # /signin and issues an HS256 JWT, the frontend drives it through Auth.js
+  # Credentials. Both sides must agree on this value or the UI will offer a
+  # login the API does not honour.
+  AUTH_TYPE: "DB"
   KEEP_METRICS: "true"
   # Outbox spike (ADR-0004) — webhook to aiops-api for domain events
   KEEP_DOMAIN_EVENTS_ENABLED: "true"
@@ -69,11 +73,63 @@ metadata:
   name: keeply-secrets
   namespace: keeply
 type: Opaque
+# ---------------------------------------------------------------------------
+# EVERY VALUE BELOW IS A FAKE EXAMPLE. This file is committed to a PUBLIC
+# repository, so it can never hold a real credential.
+#
+# Applying it as-is gives you a cluster whose tokens and session cookies are
+# signed with a secret that is published on the internet, and — because
+# KEEP_FORCE_RESET_DEFAULT_PASSWORD is true — an admin account whose password
+# is reset to the placeholder on every backend start. Placeholders are not a
+# weaker secret; they are a published one.
+#
+# Generate real values and inject them out-of-band. They live only in the
+# cluster, never in git:
+#
+#   kubectl -n keeply patch secret keeply-secrets --type=merge -p "$(cat <<JSON
+#   {"stringData":{
+#     "AIOPS_WEBHOOK_SECRET": "$(openssl rand -base64 32 | tr -d '=+/')",
+#     "KEEP_JWT_SECRET":      "$(openssl rand -base64 48 | tr -d '=+/')",
+#     "NEXTAUTH_SECRET":      "$(openssl rand -base64 48 | tr -d '=+/')",
+#     "KEEP_DEFAULT_PASSWORD":"$(openssl rand -base64 18 | tr -d '=+/')"
+#   }}
+#   JSON
+#   )"
+#
+# AIOPS_KEEP_API_KEY and KEEP_DEFAULT_API_KEYS must carry the SAME key (see
+# below), so set them from one generated value in a second patch, then
+# restart keep-backend and aiops-api.
+#
+# For anything beyond local dev, keep this Secret out of the manifest set
+# entirely (SOPS or sealed-secrets) rather than patching a committed shell.
+# ---------------------------------------------------------------------------
 stringData:
   # Keep <-> aiops-api shared HMAC key (must match the keep outbox dispatcher
   # and the aiops-api event bridge verifier).
-  AIOPS_WEBHOOK_SECRET: "dev-webhook-secret"
-  AIOPS_KEEP_API_KEY: "dev-key"
+  AIOPS_WEBHOOK_SECRET: "example-webhook-secret-CHANGE-ME"
+  # aiops-api's credential for calling Keep's API. Under NO_AUTH any string
+  # worked; under DB auth Keep verifies it, so this must be a key Keep
+  # actually provisioned — see KEEP_DEFAULT_API_KEYS below, which registers
+  # THE SAME value under the reference id "aiops". Change one, change both.
+  AIOPS_KEEP_API_KEY: "example-aiops-api-key-CHANGE-ME"
+  # Signs the JWT that /signin issues and every request carries. Without it
+  # the DB identity manager refuses to sign anyone in — and Keep falls back
+  # to the literal "jwtsecret", which makes every issued token forgeable.
+  KEEP_JWT_SECRET: "example-jwt-signing-secret-CHANGE-ME"
+  # Signs the Auth.js session cookie on the frontend. Distinct from
+  # KEEP_JWT_SECRET: this one guards the browser session, that one guards
+  # the API token inside it.
+  NEXTAUTH_SECRET: "example-nextauth-secret-CHANGE-ME"
+  # Provisioned on every backend start (idempotent) as name:role:secret.
+  # The secret half must equal AIOPS_KEEP_API_KEY above.
+  KEEP_DEFAULT_API_KEYS: "aiops:admin:example-aiops-api-key-CHANGE-ME"
+  # The initial administrator. FORCE_RESET makes the backend reconcile the
+  # existing row on every start, so this file stays the source of truth
+  # rather than whatever the database happened to be seeded with — which is
+  # exactly why applying the placeholder resets a real password to it.
+  KEEP_DEFAULT_USERNAME: "admin"
+  KEEP_DEFAULT_PASSWORD: "example-admin-password-CHANGE-ME"
+  KEEP_FORCE_RESET_DEFAULT_PASSWORD: "true"
   # LLM provider credentials are deliberately NOT in this file — it is
   # committed to git. Add them out-of-band and reference the variable NAME
   # from the agent config (PUT /v1/config {"llm_api_key_env": "..."}):

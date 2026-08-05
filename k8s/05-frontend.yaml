@@ -44,8 +44,24 @@ spec:
           image: keep-ui:keeply
           imagePullPolicy: IfNotPresent
           env:
+            # Must match keep-backend's AUTH_TYPE. Auth.js picks its provider
+            # set from this value: "DB" selects the Credentials provider that
+            # posts to the backend's /signin.
             - name: AUTH_TYPE
-              value: "NO_AUTH"
+              value: "DB"
+            # Signs the session cookie. Auth.js refuses to start without it
+            # in production, and a value that changes between rollouts
+            # invalidates every open session.
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: NEXTAUTH_SECRET
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: NEXTAUTH_SECRET
             - name: AUTH_DEBUG
               value: "true"
             - name: API_URL

@@ -186,8 +186,42 @@ spec:
             # plugin cannot call back on.
             - name: KEEP_API_URL
               value: "http://keep-backend:8080"
+            # Keep's native username/password identity manager. It adds the
+            # /signin endpoint and makes every other route require a bearer
+            # token. keep-frontend must carry the same value.
             - name: AUTH_TYPE
-              value: "NO_AUTH"
+              value: "DB"
+            # Signs the JWT /signin hands out. Keep falls back to the literal
+            # "jwtsecret" when unset, which would make every issued token
+            # forgeable by anyone who read the source.
+            - name: KEEP_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: KEEP_JWT_SECRET
+            # Reconciled on every start. The username/password pair is the
+            # human login; the API key is what aiops-api authenticates with,
+            # now that "any string" no longer passes.
+            - name: KEEP_DEFAULT_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: KEEP_DEFAULT_USERNAME
+            - name: KEEP_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: KEEP_DEFAULT_PASSWORD
+            - name: KEEP_FORCE_RESET_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: KEEP_FORCE_RESET_DEFAULT_PASSWORD
+            - name: KEEP_DEFAULT_API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: keeply-secrets
+                  key: KEEP_DEFAULT_API_KEYS
             - name: KEEP_METRICS
               value: "true"
             - name: KEEP_DOMAIN_EVENTS_ENABLED
