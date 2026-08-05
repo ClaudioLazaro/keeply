@@ -11,7 +11,7 @@
 # So keep-frontend is a catch-all at priority 1, and every other service
 # gets a NON-COLLIDING prefix at a higher priority:
 #
-#   /keepapi/*   -> keep-backend   (stripPrefix + X-API-KEY injected)
+#   /keepapi/*   -> keep-backend   (stripPrefix; caller supplies its own auth)
 #   /aiopsapi/*  -> aiops-api      (stripPrefix)
 #   /mcp/*       -> mcp-gateway    (stripPrefix)
 #   /ws/*        -> keep-websocket (stripPrefix; soketi mounts /app at root)
@@ -63,18 +63,19 @@ spec:
   stripPrefix:
     prefixes: ["/ws"]
 ---
-# Dev-cluster convenience: inject the Keep API key so the runbook's e2e
-# curls (POST /keepapi/incidents) work without carrying a token around.
-# Remove this in any environment that is not a throwaway dev cluster.
-apiVersion: traefik.containo.us/v1alpha1
-kind: Middleware
-metadata:
-  name: keep-api-key
-  namespace: keeply
-spec:
-  headers:
-    customRequestHeaders:
-      X-API-KEY: dev-key
+# NOTE: there used to be a `keep-api-key` middleware here that injected a
+# fixed `X-API-KEY: dev-key` on every request to /keepapi, so runbook curls
+# needed no credential. It was removed when AUTH_TYPE became DB, for two
+# reasons:
+#
+#   1. It was an authentication bypass at the edge. Anyone who could reach
+#      the ingress was authenticated as an admin, which defeats the login.
+#   2. `customRequestHeaders` OVERWRITES rather than defaults, so a caller
+#      that sent a real key had it silently replaced with the invalid one
+#      and got a 401 that pointed nowhere near the cause.
+#
+# Callers now carry their own credential: `X-API-KEY: <key>` for machines
+# (see KEEP_DEFAULT_API_KEYS) or `Authorization: Bearer <jwt>` from /signin.
 ---
 # keep-backend, under its own prefix. Priority high so it wins over the
 # frontend catch-all.
@@ -91,7 +92,6 @@ spec:
       priority: 100
       middlewares:
         - name: strip-keepapi
-        - name: keep-api-key
       services:
         - name: keep-backend
           port: 8080
