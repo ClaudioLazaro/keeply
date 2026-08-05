@@ -20,6 +20,8 @@ dependencies = [
     # Multi-model access (ADR-0007). Imported lazily at call sites so the
     # deterministic no-LLM path never pays the import cost.
     "litellm>=1.40",
+    "mcp>=1.2",
+    "kubernetes>=36.0.3",
 ]
 
 [project.optional-dependencies]
