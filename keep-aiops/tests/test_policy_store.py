@@ -232,3 +232,23 @@ def test_policy_migration_file_imports_cleanly():
     assert module.down_revision == "0001_initial_schema"
     assert callable(module.upgrade)
     assert callable(module.downgrade)
+
+
+def test_policy_cache_invalidated_by_a_direct_write(settings_env):
+    """A cached decision must never outlive the policy that produced it.
+
+    Evaluation caches policy sets to keep tool calls off the DB, so every
+    writer — not just the API handler — has to invalidate. Disabling the
+    seed through a bare session is the path that regressed.
+    """
+    init_db()
+    seed_default_policies()
+    assert_tool_allowed("get_pods", "read")  # populates the cache
+
+    with session_scope() as session:
+        seed = session.get(Policy, DEFAULT_POLICY_ID)
+        seed.enabled = False
+        session.add(seed)
+
+    with pytest.raises(PolicyDenied):
+        assert_tool_allowed("get_pods", "read")

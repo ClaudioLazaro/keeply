@@ -113,3 +113,56 @@ def test_incident_updated_is_noop_and_resolved_marks_flag(client, mocked_backend
     # Documented choice: status stays rca_ready; incident_resolved flag set.
     assert after["status"] == "rca_ready"
     assert after["incident_resolved"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Restart recovery and concurrency
+# --------------------------------------------------------------------------- #
+
+
+def test_orphaned_investigations_are_failed_not_left_running(client, mocked_backends):
+    """A run abandoned by a restart must stop reading as still working.
+
+    Investigations execute as in-process background tasks, so a worker that
+    exits takes its runs with it. Without the sweep the row sits in
+    `gathering` forever and is indistinguishable, in the UI, from one still
+    gathering evidence.
+    """
+    from datetime import timedelta
+
+    from aiops_api.db import session_scope
+    from aiops_api.modules.orchestrator.models import Investigation, _utcnow
+    from aiops_api.modules.orchestrator.service import fail_orphaned_investigations
+
+    with session_scope() as session:
+        stale = Investigation(tenant_id=TENANT_ID, incident_id="incident-stale", status="gathering")
+        stale.updated_at = _utcnow() - timedelta(hours=2)
+        fresh = Investigation(tenant_id=TENANT_ID, incident_id="incident-fresh", status="gathering")
+        session.add(stale)
+        session.add(fresh)
+        stale_id, fresh_id = stale.id, fresh.id
+
+    assert fail_orphaned_investigations() == 1
+
+    swept = client.get(f"/v1/investigations/{stale_id}").json()
+    assert swept["status"] == "failed"
+    assert "orphaned" in swept["error"]
+
+    # A young run may genuinely still be working — it must be left alone.
+    assert client.get(f"/v1/investigations/{fresh_id}").json()["status"] == "gathering"
+
+
+def test_concurrency_slot_is_released_after_each_run(client, mocked_backends):
+    """A leaked slot would silently stall every later investigation."""
+    from aiops_api.modules.orchestrator import service
+    from aiops_api.settings import get_settings
+
+    service.reset_gate()
+    assert post_event(client, make_event("incident.created")).status_code == 202
+
+    gate = service._investigation_gate()
+    limit = get_settings().max_concurrent_investigations
+    taken = [gate.acquire(blocking=False) for _ in range(limit)]
+    for _ in range(sum(taken)):
+        gate.release()
+    assert all(taken), "a concurrency slot leaked; later investigations would block"

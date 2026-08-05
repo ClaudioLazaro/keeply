@@ -38,12 +38,17 @@ def settings_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AIOPS_AUTH_ENABLED", "false")
 
     from aiops_api import db
+    from aiops_api.modules.orchestrator.service import reset_gate
     from aiops_api.settings import get_settings
 
     get_settings.cache_clear()
     db.reset_engine()
+    # The concurrency semaphore caches the limit from settings, so it has to
+    # be dropped alongside them or a test inherits the previous test's gate.
+    reset_gate()
     yield
     db.reset_engine()
+    reset_gate()
     get_settings.cache_clear()
 
 

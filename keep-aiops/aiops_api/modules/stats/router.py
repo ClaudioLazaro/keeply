@@ -86,7 +86,12 @@ def get_stats(
         # Evidence has no tenant column — join through the investigation so
         # the count respects tenant scope like everything else here.
         evidence_stmt = select(func.count()).select_from(Evidence)
-        gap_stmt = select(func.count()).select_from(Evidence).where(Evidence.summary.contains("evidence gap"))
+        # Count gaps by the indexed provenance column, not by text-matching
+        # the summary. `LIKE '%evidence gap%'` cannot use an index and scans
+        # the highest-cardinality table in the schema on every dashboard
+        # load — and it silently depends on the summary wording, which the
+        # column exists precisely to make authoritative.
+        gap_stmt = select(func.count()).select_from(Evidence).where(Evidence.backend == "gap")
         if tenant_id:
             scope_ids = select(Investigation.id).where(Investigation.tenant_id == tenant_id)
             evidence_stmt = evidence_stmt.where(Evidence.investigation_id.in_(scope_ids))

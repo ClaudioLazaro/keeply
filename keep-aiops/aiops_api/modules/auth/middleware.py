@@ -67,6 +67,26 @@ class _KeepUnavailable(Exception):
 _cache: dict[str, tuple[float, TenantContext]] = {}
 _cache_lock = threading.Lock()
 
+# Entries were only ever checked for expiry on read, never removed, so a
+# caller rotating keys (or probing with junk ones that authenticate) grew
+# this dict without bound for the life of the process. Expired rows are
+# purged on insert; if the cache is still at the ceiling afterwards the
+# soonest-to-expire entry is evicted, which costs at most one extra
+# /whoami round-trip.
+_CACHE_MAX_ENTRIES = 1024
+
+
+def _store(key_hash: str, expires_at: float, context: TenantContext) -> None:
+    """Insert into the identity cache, keeping it bounded."""
+    with _cache_lock:
+        if len(_cache) >= _CACHE_MAX_ENTRIES:
+            now = time.monotonic()
+            for stale in [k for k, (exp, _) in _cache.items() if exp <= now]:
+                del _cache[stale]
+            if len(_cache) >= _CACHE_MAX_ENTRIES:
+                del _cache[min(_cache, key=lambda k: _cache[k][0])]
+        _cache[key_hash] = (expires_at, context)
+
 
 def clear_cache() -> None:
     """Drop every cached identity (tests / key revocation flush)."""
@@ -106,8 +126,7 @@ async def _authenticate(api_key: str, settings: Settings) -> TenantContext:
         email=payload.get("email"),
         role=payload.get("role"),
     )
-    with _cache_lock:
-        _cache[key_hash] = (now + settings.auth_cache_ttl_seconds, context)
+    _store(key_hash, now + settings.auth_cache_ttl_seconds, context)
     return context
 
 

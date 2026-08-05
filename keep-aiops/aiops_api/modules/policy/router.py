@@ -43,6 +43,9 @@ def upsert_policy(policy_id: str, body: PolicyUpsert) -> Policy:
         session.add(policy)
         session.commit()
         session.refresh(policy)
+        # Cache invalidation is hooked on the Policy mapper (policy/engine.py),
+        # so it already fired on this write — deliberately not repeated here,
+        # so there is one mechanism rather than two that can disagree.
         return policy
 
 

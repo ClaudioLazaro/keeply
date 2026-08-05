@@ -26,7 +26,9 @@ tracker is reported in the error string so the operator can see what blew.
 """
 
 import logging
+import threading
 import time
+from datetime import timedelta, timezone
 from typing import Any
 
 from sqlmodel import select
@@ -44,6 +46,36 @@ from aiops_api.settings import Settings, get_settings
 from aiops_api.telemetry import investigation_span
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# Concurrency gate
+# --------------------------------------------------------------------------- #
+
+# The per-investigation budget caps what one run costs; nothing capped how
+# many run at once. Every eligible incident.created scheduled a background
+# task immediately, so an alert storm of 200 critical incidents started 200
+# runs — each holding a DB connection for its whole life against a pool of
+# 15. This bounds that. Waiting here occupies a worker thread, which is a
+# real cost, but a bounded wait beats an exhausted pool that fails every
+# other request in the process too.
+_gate: threading.BoundedSemaphore | None = None
+_gate_lock = threading.Lock()
+
+
+def _investigation_gate() -> threading.BoundedSemaphore:
+    global _gate
+    with _gate_lock:
+        if _gate is None:
+            _gate = threading.BoundedSemaphore(get_settings().max_concurrent_investigations)
+        return _gate
+
+
+def reset_gate() -> None:
+    """Drop the cached semaphore (tests that repoint the concurrency limit)."""
+    global _gate
+    with _gate_lock:
+        _gate = None
 
 
 def _budget_for(tenant_id: str, settings: Settings) -> Budget:
@@ -172,6 +204,18 @@ def find_investigation(tenant_id: str, incident_id: str) -> Investigation | None
 def run_investigation(investigation_id: str) -> None:
     """queued -> gathering -> hypothesizing -> rca_ready, with writeback to Keep."""
     settings = get_settings()
+    gate = _investigation_gate()
+    if not gate.acquire(blocking=False):
+        # Say so rather than stalling silently: a run sitting here is
+        # indistinguishable, from the outside, from one that is working.
+        logger.info(
+            "investigation waiting for a concurrency slot",
+            extra={
+                "investigation_id": investigation_id,
+                "limit": settings.max_concurrent_investigations,
+            },
+        )
+        gate.acquire()
     start = time.monotonic()
     metrics.investigations_active.inc()
     mode = "suggest"  # M0 is suggest-only; relabel if modes are introduced
@@ -266,6 +310,7 @@ def run_investigation(investigation_id: str) -> None:
             snap = tracker.snapshot()
             metrics.investigation_cost.labels(kind="wall_time_seconds").inc(int(snap["wall_time"]))
         metrics.investigations_active.dec()
+        gate.release()
 
 
 def _gather_phase(
@@ -314,6 +359,52 @@ def _mark_failed(investigation_id: str, error_text: str) -> None:
                 session.add(investigation)
     except Exception:  # noqa: BLE001
         logger.exception("could not mark investigation failed", extra={"investigation_id": investigation_id})
+
+
+RUNNING_STATUSES = ("gathering", "hypothesizing")
+
+
+def fail_orphaned_investigations(settings: Settings | None = None) -> int:
+    """Fail investigations a restart abandoned mid-run. Returns how many.
+
+    Runs are in-process background tasks, so a worker that exits takes its
+    investigations with it and the rows stay in `gathering`/`hypothesizing`
+    forever — reading, to an operator, exactly like one still working.
+    Nothing else ever revisits them, and the event-level dedupe means Keep
+    re-delivering the incident will not re-drive them either.
+
+    Swept at startup. Never raises: a failing sweep must not stop the app
+    from booting.
+    """
+    settings = settings or get_settings()
+    cutoff = _utcnow() - timedelta(seconds=settings.orphan_investigation_timeout_seconds)
+    swept = 0
+    try:
+        with session_scope() as session:
+            candidates = session.exec(
+                select(Investigation).where(Investigation.status.in_(RUNNING_STATUSES))
+            ).all()
+            for investigation in candidates:
+                updated = investigation.updated_at
+                # SQLite returns naive datetimes; Postgres keeps the offset.
+                if updated is not None and updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                if updated is not None and updated > cutoff:
+                    continue  # young enough that it may genuinely be running
+                investigation.error = (
+                    "orphaned: the worker running this investigation exited before it "
+                    f"finished (no progress for over "
+                    f"{int(settings.orphan_investigation_timeout_seconds)}s)"
+                )
+                _set_status(session, investigation, "failed")
+                metrics.investigations_failed.labels(mode=investigation.mode).inc()
+                swept += 1
+    except Exception:  # noqa: BLE001 — startup must not depend on this
+        logger.warning("orphan investigation sweep skipped", exc_info=True)
+        return 0
+    if swept:
+        logger.warning("swept orphaned investigations to failed", extra={"count": swept})
+    return swept
 
 
 def _set_status(session, investigation: Investigation, status: str) -> None:

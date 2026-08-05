@@ -12,14 +12,77 @@ in list order; the first matching rule decides. A rule matches when its
 """
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 
+from sqlalchemy import event
 from sqlmodel import Session, select
 
 from aiops_api.db import session_scope
 from aiops_api.modules.policy.models import GLOBAL_TENANT, Policy
 
 logger = logging.getLogger(__name__)
+
+# Scope -> (expires_at_monotonic, [(policy_id, rules), ...]) in decision order.
+#
+# Every tool call an investigation makes evaluates policy, and each
+# evaluation ran its own SELECT — up to 50 connection checkouts per
+# investigation, issued from a thread that already holds one. Policies
+# change on operator action, not on the hot path, so a short TTL costs
+# nothing and removes the checkouts. Rules are cached as plain dicts:
+# detached ORM rows would raise once their session closed.
+_POLICY_CACHE: dict[str, tuple[float, list[tuple[str, list[dict]]]]] = {}
+_POLICY_CACHE_LOCK = threading.Lock()
+_POLICY_CACHE_TTL_SECONDS = 10.0
+
+
+def invalidate_cache() -> None:
+    """Drop the cached policy sets."""
+    with _POLICY_CACHE_LOCK:
+        _POLICY_CACHE.clear()
+
+
+@event.listens_for(Policy, "after_insert")
+@event.listens_for(Policy, "after_update")
+@event.listens_for(Policy, "after_delete")
+def _invalidate_on_write(_mapper, _connection, _target) -> None:
+    """Clear the cache whenever any Policy row is written.
+
+    Hooked at the ORM rather than at the API handler on purpose: the router
+    is only one writer. The startup seed and any future code path write
+    through a session too, and a policy change that failed to invalidate
+    would leave tool calls governed by rules the operator already replaced
+    — the kind of staleness that stops being cosmetic the moment mutate
+    tools are gated by this. Over-invalidating (on a later rollback) only
+    costs one re-read.
+
+    This is process-local. A second replica keeps serving its own snapshot
+    until the TTL expires, which is the honest limit of an in-process
+    cache and why the v2 design moves this to a watched KV bundle.
+    """
+    invalidate_cache()
+
+
+def _policies_for_scope(session: Session, scope: str) -> list[tuple[str, list[dict]]]:
+    """Enabled policies for one scope, in (created_at, id) order, cached."""
+    now = time.monotonic()
+    with _POLICY_CACHE_LOCK:
+        hit = _POLICY_CACHE.get(scope)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+
+    loaded = [
+        (policy.id, [dict(rule) for rule in policy.rules])
+        for policy in session.exec(
+            select(Policy)
+            .where(Policy.tenant_id == scope, Policy.enabled.is_(True))
+            .order_by(Policy.created_at, Policy.id)
+        ).all()
+    ]
+    with _POLICY_CACHE_LOCK:
+        _POLICY_CACHE[scope] = (now + _POLICY_CACHE_TTL_SECONDS, loaded)
+    return loaded
 
 ALLOW = "allow"
 DENY = "deny"
@@ -60,15 +123,10 @@ def evaluate(
     """Evaluate persisted policies; fail closed (deny) when nothing matches."""
     scopes = [GLOBAL_TENANT] if tenant_id == GLOBAL_TENANT else [tenant_id, GLOBAL_TENANT]
     for scope in scopes:
-        policies = session.exec(
-            select(Policy)
-            .where(Policy.tenant_id == scope, Policy.enabled.is_(True))
-            .order_by(Policy.created_at, Policy.id)
-        ).all()
-        for policy in policies:
-            for rule in policy.rules:
+        for policy_id, rules in _policies_for_scope(session, scope):
+            for rule in rules:
                 if _rule_matches(rule, tool_name, execution_class, environment):
-                    return PolicyDecision(decision=rule["decision"], policy_id=policy.id)
+                    return PolicyDecision(decision=rule["decision"], policy_id=policy_id)
     return PolicyDecision(decision=DENY, policy_id=None)
 
 

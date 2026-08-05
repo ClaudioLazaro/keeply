@@ -79,7 +79,13 @@ def _clean(value: Any, limit: int) -> str:
     return text[:limit].strip()
 
 
-def _apply_one(proposal: "RuleProposal", samples: list[str], model: str, api_key: str | None) -> None:
+def _apply_one(
+    proposal: "RuleProposal",
+    samples: list[str],
+    model: str,
+    api_key: str | None,
+    timeout: float,
+) -> None:
     import litellm  # lazy: the no-LLM path must not pay the import cost
 
     response = litellm.completion(
@@ -92,6 +98,10 @@ def _apply_one(proposal: "RuleProposal", samples: list[str], model: str, api_key
         temperature=0,
         max_tokens=2000,
         response_format={"type": "json_object"},
+        # One call per proposal, sequentially: without a ceiling a single
+        # unresponsive provider stalls the whole correlation pass, and the
+        # caller's except-and-continue never gets the chance to run.
+        timeout=timeout,
     )
     content = response.choices[0].message.content
     if not isinstance(content, str) or not content.strip():
@@ -126,8 +136,10 @@ def apply_wording(proposals: list["RuleProposal"], tenant_id: str, samples_by_ce
         from aiops_api.settings import get_settings
 
         config = get_effective_config(tenant_id)
-        model = config.llm_model or get_settings().llm_model
+        settings = get_settings()
+        model = config.llm_model or settings.llm_model
         api_key = config.llm_api_key or None
+        timeout = settings.llm_timeout_seconds
     except Exception:  # noqa: BLE001
         logger.warning("could not read agent config for proposal wording", exc_info=True)
         return proposals
@@ -140,7 +152,7 @@ def apply_wording(proposals: list["RuleProposal"], tenant_id: str, samples_by_ce
     samples_by_cel = samples_by_cel or {}
     for proposal in proposals:
         try:
-            _apply_one(proposal, samples_by_cel.get(proposal.cel, []), model, api_key)
+            _apply_one(proposal, samples_by_cel.get(proposal.cel, []), model, api_key, timeout)
         except Exception as exc:  # noqa: BLE001 — wording must never fail analysis
             logger.warning(
                 "could not word correlation proposal, keeping deterministic text",

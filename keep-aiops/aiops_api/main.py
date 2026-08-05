@@ -23,10 +23,15 @@ async def lifespan(app: FastAPI):
         )
     init_db()
     from aiops_api.modules.knowledge.ingest import seed_global_runbooks
+    from aiops_api.modules.orchestrator.service import fail_orphaned_investigations
     from aiops_api.modules.policy.engine import seed_default_policies
 
     seed_default_policies()
     seed_global_runbooks()
+    # Investigations run as in-process background tasks, so anything left
+    # mid-run by the previous process is gone. Mark it failed instead of
+    # leaving it displayed as still working.
+    fail_orphaned_investigations()
     yield
 
 

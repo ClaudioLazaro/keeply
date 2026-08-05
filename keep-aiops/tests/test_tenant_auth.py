@@ -147,3 +147,22 @@ def test_event_bridge_hmac_endpoint_exempt_from_api_key(auth_client):
     response = post_event(auth_client, event)
     assert response.status_code == 202
     assert response.json()["accepted"] is True
+
+
+def test_identity_cache_stays_bounded(settings_env):
+    """Entries were expired on read but never removed, so the dict only grew.
+
+    A caller rotating keys (or probing with keys that authenticate) grew it
+    for the life of the process.
+    """
+    import time as _time
+
+    from aiops_api.modules.auth import clear_cache, middleware
+
+    clear_cache()
+    context = middleware.TenantContext(tenant_id=TENANT_A)
+    for i in range(middleware._CACHE_MAX_ENTRIES + 50):
+        middleware._store(f"hash-{i}", _time.monotonic() + 60, context)
+
+    assert len(middleware._cache) <= middleware._CACHE_MAX_ENTRIES
+    clear_cache()
