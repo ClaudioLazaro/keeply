@@ -40,12 +40,31 @@ class Settings(BaseSettings):
     budget_max_wall_time_seconds: float = 120.0
     budget_max_llm_tokens: int = 200_000
 
+    # Ceiling on investigations running at once in this process. The budget
+    # caps what ONE investigation costs; nothing capped how many start, so an
+    # alert storm scheduled one background task per incident and each held a
+    # DB connection for its whole run. Keep this below the connection pool
+    # (pool_size + max_overflow) or the pool becomes the real limit again.
+    max_concurrent_investigations: int = 8
+
+    # An investigation still in gathering/hypothesizing after this long was
+    # almost certainly orphaned by a restart — the in-process background task
+    # died with the worker. Startup sweeps those to `failed` so they stop
+    # reading as "still running" forever.
+    orphan_investigation_timeout_seconds: float = 900.0
+
     # LLM (LiteLLM, ADR-0007). Empty model = disabled: RCA generation uses
     # the deterministic rule-based fallback and everything works without a key.
     # These stay as bootstrap defaults; the persisted agent config
     # (modules/config) overrides them at runtime.
     llm_model: str = ""
     llm_api_key: str = ""
+    # Hard ceiling on one completion round-trip. Without it a hung provider
+    # connection pins its worker thread and its DB connection forever: the
+    # token budget cannot save us because it is charged AFTER the call
+    # returns, so it is accounting, not a limiter. Sized under
+    # budget_max_wall_time_seconds so the wall budget stays the outer bound.
+    llm_timeout_seconds: float = 90.0
 
     # Persistence (M0: SQLite; M1: Postgres via same URL setting)
     database_url: str = "sqlite:///./aiops.db"

@@ -130,6 +130,9 @@ def _call_llm(settings: Settings, incident: dict, evidence: list[Any], knowledge
         # finish_reason=length, which parses as an LLM failure and silently
         # degrades to the deterministic fallback.
         max_tokens=RCA_MAX_TOKENS,
+        # The token budget is charged after this returns, so it can never
+        # stop a provider that simply never answers. This can.
+        timeout=settings.llm_timeout_seconds,
     )
     content = response.choices[0].message.content
     if not isinstance(content, str) or not content.strip():
