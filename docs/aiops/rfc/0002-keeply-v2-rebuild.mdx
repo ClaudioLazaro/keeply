@@ -1,0 +1,269 @@
+---
+title: "RFC-0002: Keeply v2 — Reconstrução da Plataforma"
+description: "Proposta de reconstrução da plataforma AIOps a partir do zero: diagnóstico dos 11 gargalos do sistema atual, decisões de stack, execução durável com Temporal e roadmap em nove estágios."
+---
+
+| Campo | Valor |
+|-------|-------|
+| **RFC** | 0002 |
+| **Título** | Keeply v2 — Reconstrução da Plataforma |
+| **Status** | **Rascunho — aprovado como direção, não em execução** |
+| **Criada em** | 2026-08-04 |
+| **Autores** | Plataforma / IA / SRE |
+| **Relacionados** | [RFC-0001](/aiops/rfc/0001-keep-evolved-capabilities) · [STATUS](/aiops/STATUS) · [Índice de ADRs](/aiops/adr/index) · [Arquitetura](/aiops/architecture/overview) |
+
+<Warning>
+**Esta RFC não está em execução.** Ela registra a direção arquitetural decidida e o diagnóstico que a fundamenta. O trabalho corrente continua sendo a evolução da plataforma atual. Os gargalos catalogados aqui valem como backlog de melhoria do sistema existente, independente de a v2 ser construída.
+</Warning>
+
+## Contexto
+
+A Keeply hoje é um fork do Keep (Python/FastAPI) mais um plano de controle de IA próprio (`keep-aiops/`, ~9.3k linhas) que faz investigação de incidentes, RCA e correlação de alertas. Funciona e está deployado em K3D, mas está arquitetado como um sistema single-replica, single-process, best-effort — e cada camada assume isso independentemente.
+
+A inspeção de código encontrou 11 gargalos concretos. Os quatro que definem o teto:
+
+| # | Gargalo | Evidência |
+|---|---|---|
+| 1 | Investigações em `BackgroundTasks` — restart perde a investigação para sempre, sem retry/lease/dead-letter, e o dedupe de evento impede re-entrega | `orchestrator/service.py:86` |
+| 2 | Teto de ~15 investigações simultâneas: sessão de DB única mantida aberta pelos 120s inteiros contra pool default não-tunado | `db.py:23` |
+| 4 | 10 especialistas em série, com `httpx` síncrono — um backend degradado consome o budget inteiro em timeouts sequenciais | `coordinator.py:212` |
+| 8/9 | RAG O(N·D) em Python puro sem pgvector; correlação O(n²) com ~500k passadas de regex por run | `knowledge/retriever.py:95`, `correlation/grouping.py:81` |
+
+**Nove dos onze gargalos são código síncrono segurando uma conexão durante espera de I/O.** O diagnóstico não é "Python é lento" — é que o modelo de execução está errado. Isso importa porque define o que a reconstrução precisa mudar de verdade, e porque significa que boa parte do ganho é alcançável sem trocar de stack.
+
+**Decisões que definem o escopo:** plataforma nova do zero, sem restrição de compatibilidade com o upstream Keep; Go onde se paga; reconstruir em vez de adotar o Keep como subsistema; execução solo.
+
+**Resultado pretendido:** concorrência real de investigações, latência baixa por investigação, durabilidade (nenhum trabalho perdido) e throughput de ingestão — as quatro dimensões, todas prioritárias.
+
+## Catálogo completo dos gargalos
+
+Referência para o backlog de melhoria do sistema atual.
+
+| # | Gargalo | Local |
+|---|---|---|
+| 1 | `BackgroundTasks` sem durabilidade, retry, lease ou dead-letter; sem cap de concorrência | `orchestrator/service.py:86` |
+| 2 | Pool não-tunado (15 conexões) com sessão segurada por toda a investigação; sem `pool_pre_ping` | `db.py:23`, `service.py:194-236` |
+| 3 | Investigação roda no threadpool anyio de 40 threads compartilhado com todo handler síncrono | `service.py` (função síncrona) |
+| 4 | 10 especialistas em laço sequencial com `httpx` síncrono | `coordinator.py:212` |
+| 5 | Checagem de policy faz round-trip de DB por chamada de tool (até 50 por investigação) | `policy/engine.py:80` |
+| 6 | `litellm.completion()` sem `timeout=`; budget de tokens cobrado depois da chamada | `rca/engine.py:119` |
+| 7 | Trabalho síncrono de DB no event loop no único handler `async def` | `event_bridge/router.py:40-64` |
+| 8 | Embeddings em JSON, cosseno em loop Python puro, varredura total por query | `knowledge/retriever.py:95-111` |
+| 9 | Correlação O(n²) com re-tokenização por par; pull truncado em 500 alertas; N+1 na gravação | `correlation/grouping.py:81`, `service.py:211` |
+| 10 | Cinco caches process-local com invalidação apenas local; cache de auth é dict sem limite | `auth/middleware.py:67`, `config/service.py:30`, outros |
+| 11 | Tool mesh: conexão nova por chamada, client k8s reconstruído por invocação, sem breaker/rate limit, audit bloqueante no event loop | `mcp_gateway/`, `tools/*.py` |
+
+## Calibração — o que "reconstruir tudo" significa aqui
+
+O escopo é reconstrução total. O que muda com execução solo não é a ambição, é a **superfície operacional** que o resultado pode ter.
+
+1. **Adotar infraestrutura reduz código a manter.** Temporal, NATS e pgvector não são peso adicional — cada um substitui centenas de linhas de máquina frágil que hoje é código próprio.
+2. **Reconstruir os providers que se usa, não os 133.** Escrever integrações é barato; mantê-las contra drift de API de terceiros é imposto recorrente.
+3. **Nenhum estágio pode deixar a plataforma sem funcionar.**
+
+**Teto rígido de 3 serviços com estado:** Postgres (OLTP + pgvector + schema do Temporal), NATS JetStream (barramento + KV), Temporal. Valkey, MinIO e ClickHouse ficam fora até um gatilho medido disparar.
+
+## Arquitetura
+
+### Stack por componente
+
+| Componente | Stack | Justificativa |
+|---|---|---|
+| **Investigation workers** (orquestrador, especialistas, RCA, RAG, provenance) | Python 3.12 **asyncio-native**, Temporal SDK, `httpx.AsyncClient`, SQLAlchemy 2.0 async | Ecossistema decisivo: litellm, structured output, embeddings, reranker, harness de eval. Trabalho é 99% espera de rede — asyncio resolve os gargalos 1–7. |
+| **Ingest gateway** | **Go** (`net/http` + `nats.go`) | Loop validate → publish → 202, lógica de negócio zero. Multiplexação de conexão e p99 previsível. |
+| **Tool mesh / MCP gateway** | **Go** (`mcp-go`, `gobreaker`, `client-go`) | Fan-out sobre 8+ backends: pools longos, breakers por backend, rate limit por tenant, singleflight, propagação de deadline. `client-go` elimina o `load_incluster_config()` por invocação. |
+| **Rules engine** | **Go** (`cel-go`), colocado no ingest | `cel-go` compila o programa **uma vez** e reusa — exatamente o defeito que o Keep tem hoje. Argumento mais forte de linguagem no desenho inteiro. |
+| **Correlação** | Python + `datasketch` (MinHash/LSH) | Depois que a geração de candidatos vira LSH, a linguagem deixa de importar. |
+| **UI** | Next.js 15 App Router | Reconstruída, com a suíte Jest existente como especificação. |
+
+**Rust: não.** Não há componente onde Rust ganhe de Go o suficiente para justificar uma terceira linguagem. Os dois candidatos teóricos (similaridade vetorial, avaliação CEL) se resolvem melhor *não escrevendo o kernel*: HNSW do pgvector já é C com SIMD, e o pre-filtro por índice invertido importa 100× mais que o fator constante do avaliador.
+
+**Disciplina para os serviços Go:** vêm depois do núcleo Python funcionar, e ficam finos por construção. Um serviço Go travado nunca pode bloquear a plataforma.
+
+### Execução durável: Temporal
+
+O FSM (`queued → gathering → hypothesizing → rca_ready`), ~120s, fan-out para 10 backends, chamadas LLM, sobrevivendo a restart, é caso de uso de livro-texto.
+
+- **Worker slots são o cap de concorrência que não existe hoje.** `max_concurrent_activities=32` não puxa a 33ª. A fila absorve o resto, duravelmente, e profundidade de fila vira métrica de autoscaling.
+- **Timeout por activity faz um backend degradado custar um timeout, não o budget inteiro.**
+- **O workflow ID é a chave de idempotência.** `inv-{tenant}-{incident_id}` com `WorkflowIDReusePolicy` dá exactly-once nativo. A tabela `ProcessedEvent` deixa de existir, e com ela o bug de "investigação travada não pode ser re-dirigida sem cirurgia no banco".
+
+Custo honesto: restrições de determinismo no código de workflow (sem relógio, sem I/O direto — tudo em activities). Espere um incidente causado por edição não-determinística antes da disciplina de versionamento pegar.
+
+```
+InvestigationWorkflow(tenant, incident_id)
+  ├─ activity: load_context_pack          (transação curta e própria)
+  ├─ asyncio.gather sobre N especialistas  (timeout/retry/heartbeat cada)
+  ├─ activity: retrieve_knowledge
+  ├─ activity: generate_hypotheses         (budget verificado ANTES, reconciliado depois)
+  ├─ activity: write_rca + provenance
+  └─ signals: incident.resolved → curto-circuito; operator_cancel
+```
+
+**Duas regras invioláveis:**
+
+- Uma activity abre sessão, faz uma transação, fecha. **Nenhuma sessão atravessa chamada externa.**
+- Budget de tokens verificado **antes** da chamada LLM com custo projetado. Cobrança pós-hoc é contabilidade, não limitador.
+
+### Barramento: NATS JetStream
+
+Um binário de ~20MB entregando streams duráveis com replay, work-queue com ack/nak, KV store e object store numa dependência só.
+
+**O KV store é como os cinco caches process-local morrem.** Cada réplica faz *watch* num bucket para policy bundle, agent config e catálogo de integrações. Invalidação vira push que alcança todas as réplicas em milissegundos. Um mecanismo, cinco bugs.
+
+```
+alerts.raw.<tenant>.<source>     → stream ALERTS_RAW, workqueue, ack explícito
+alerts.normalized.<tenant>       → stream ALERTS
+incidents.<tenant>.<event>       → stream INCIDENTS (substitui o webhook bridge)
+audit.<tenant>.tool              → stream AUDIT → sink
+```
+
+**Ordenação — limitação declarada.** JetStream ordena por stream, não por chave como partições Kafka. A resposta certa não é contornar o broker: **tornar o processamento de alerta independente de ordem.** Estado é last-write-wins em `(tenant, fingerprint)` com guarda monotônica; enriquecimento é comutativo; correlação é janelada e idempotente. Isso é melhor desenho independente do broker, porque as fontes reordenam de qualquer jeito.
+
+Publisher/consumer atrás de uma interface `EventBus` fina — trocar para Redpanda vira decisão futura, não aposta agora.
+
+### Storage
+
+**Postgres 16, um cluster, schemas separados** (`core`, `aiops`, `temporal`).
+
+- Pool explícito **sempre**: `pool_size`, `max_overflow`, `pool_pre_ping=True`, `pool_recycle`. Nunca default.
+- **PgBouncer em transaction mode.** Com activities segurando conexão por milissegundos em vez de 120 segundos, 15 conexões servem centenas de investigações concorrentes. **É a mudança de maior alavancagem do documento inteiro.**
+- Exportar saturação de pool e tempo de espera de checkout. *A ausência dessa métrica é por que o teto de 15 era invisível.*
+- Histórico de alertas: particionamento declarativo por tempo, BRIN, B-tree composto com tenant à frente. Portar a ideia da tabela ponteiro `LastAlert` do Keep.
+
+**pgvector para RAG.** O gargalo 8 não é "falta um banco vetorial", é "embeddings em JSON e cosseno em loop Python". `vector(1024)` + HNSW transforma varredura interpretada de 15M multiplicações em query ANN sub-10ms.
+
+Por que não Qdrant: consistência transacional (runbook e embedding commitam juntos — banco separado é problema de sync para sempre), isolamento de tenant é `WHERE tenant_id` indexado, e **retrieval híbrido vira uma query só** — HNSW denso + `tsvector` fundidos com RRF num CTE.
+
+### Algoritmos — corrigir, não só mover para linguagem rápida
+
+**Correlação: O(n²) → ~O(n)**
+
+1. **Tokenizar uma vez, no ingest.** Persistir na linha do alerta: token set normalizado, assinatura MinHash de 128 permutações, e blocking keys. Nada a jusante re-tokeniza. Só isso elimina as ~500k passadas de regex.
+2. **Banding LSH para candidatos.** 128 minhashes em 32 bandas de 4; colisão em ≥1 banda vira candidato. Pares caem de 125k para algumas centenas.
+3. **Blocking key por serviço também.** `similarity.py` pesa serviço em 0.45 — é o sinal dominante, logo tem que ser blocking key. LSH puro sobre texto perderia exatamente os pares que o scorer mais confia.
+4. **Manter o scorer explicável, rodando só nos candidatos.** LSH para *recall*, score ponderado com `reasons[]` para *precisão e explicação*. Não substituir o scorer — é requisito de produto.
+5. **Union-Find no lugar da varredura aninhada.** Resultado idêntico, quase linear.
+6. **Modo online:** alerta novo pontua contra ≤3 representantes por blocking key. Custo por alerta independe de n — é o que torna tempestade sobrevivível.
+
+**Rules engine**
+
+1. **Compilar uma vez, cachear por versão**, invalidado por watch no KV.
+2. **Uma activation por evento**, não um round-trip JSON por sub-regra.
+3. **Pre-filtro por índice invertido — a correção algorítmica real.** No save da regra, extrair do AST CEL os predicados conjuntivos e montar bitmaps por campo/valor. Por evento: intersectar, unir com `always`, avaliar CEL só nos sobreviventes. Um tenant de 500 regras cai para 5–20 candidatos por evento. É os 95% do RETE que importam, sem a pegada de memória.
+4. Regras multi-evento são classe separada e explicitamente tipada, para o caminho single-event continuar rápido.
+
+**RAG**
+
+- Chunking consciente de heading (~512 tokens, 15% overlap) com ponteiro para o documento pai e proveniência do chunk — é o que faz `[K#]` resolver para local exato.
+- Embeddings 1024-dim.
+- **Híbrido numa query:** denso top-50 ∪ léxico top-50, fundidos com **RRF (k=60)**. Sem normalização de score, sem tuning por corpus.
+- **Três queries determinísticas do context pack** (sintoma, identificadores de serviço, strings de erro), fundidas com RRF.
+- Rerank cross-encoder sobre top-50 → top-8. É o passo que mais melhora qualidade de citação.
+- **Indexar RCAs anteriores com o sinal de feedback** — vira feature de rerank e materializa o loop de aprendizado.
+
+### Tool mesh
+
+| Defeito hoje | Correção |
+|---|---|
+| Conexão HTTP nova por chamada | Um client por backend, `MaxIdleConnsPerHost` tunado |
+| K8s client reconstruído por invocação | Clientset no startup, token auto-refresh |
+| Timeout uniforme hardcoded 10s | Timeout por tool, **limitado por deadline propagado do budget restante** |
+| Sem retry/breaker | Breaker por `(tenant, backend)`; aberto retorna erro tipado imediatamente → vira `gap` honesto |
+| Sem rate limit | Token bucket por `(tenant, backend)` |
+| Audit bloqueante por invocação no event loop | Publica em NATS; sink consome em lote |
+| Lock segurado durante fetch de 5s | `singleflight` — nenhum lock durante I/O |
+| Chamadas idênticas duplicadas | `singleflight` por `(tenant, tool, hash(args))` + TTL curto |
+
+**Duas coisas a preservar exatamente:** o mesh é a **única fronteira auditada**, e **carimba a classe de proveniência** (`live`/`stub`/`gap`) na camada de transporte, não no chamador. Tornar `provenance` campo obrigatório sem default no protobuf faz ser *estruturalmente impossível* uma chamada stub ou falha chegar indistinguível de telemetria real — é a versão arquitetural da disciplina que quatro commits do log já pagaram para aprender.
+
+### Concorrência que se sustenta
+
+| Camada | Cap | Métrica |
+|---|---|---|
+| Admissão de ingest | Token bucket por tenant; **202 só depois do ack do publish**; **429 com `Retry-After`** | taxa de shed |
+| Admissão de investigação | Scheduler justo na frente do Temporal, com `max_in_flight` por tenant | investigações em voo por tenant |
+| Worker slots | Task queues por classe: `inv-orchestration`, `inv-gather`, `inv-llm` | backlog por task queue → HPA |
+| Fan-out de especialista | `asyncio.gather` + `Semaphore` por backend | p99 por backend, estado do breaker |
+
+O 202 de hoje é uma promessa sem mecanismo para cumprir. **Backpressure honesto é o mesmo princípio da proveniência aplicado a capacidade** — o que exceder a cota fica `queued` com posição de fila visível na UI, não descartado em silêncio.
+
+Correlação também amortece naturalmente: uma tempestade de 500 alertas colapsa em poucos incidentes, então contagem de investigação não escala com contagem de alerta.
+
+**Métricas obrigatórias desde o dia um:** espera de checkout de pool, backlog por task queue, investigações em voo por tenant, estado de breaker por backend, latência e tokens de LLM, taxa de shed, e **razão de proveniência (live/stub/gap) como SLI de produto**.
+
+### Policy
+
+Portar a semântica atual (tenant → global → deny fail-closed) como está — são 107 linhas corretas. **Mudar a localização, não a lógica:** bundle versionado publicado no KV; todo processo faz watch e avalia em memória. Zero DB no caminho quente.
+
+Avaliar Cedar apenas no estágio de mutação, quando propriedades prováveis passam a valer o ecossistema menor. Antes disso é complexidade sem retorno.
+
+## O que portar sem reescrever
+
+Verificado por leitura direta — é lógica de domínio ganha com dor, e reescrever do zero seria perda pura.
+
+| Arquivo | Por quê |
+|---|---|
+| `aiops_api/modules/rca/provenance.py` | Codifica julgamento operacional real: fator de desconto 0.4, quatro rótulos distintos para atribuir a falha com precisão, e "confiança só é reduzida, nunca inflada". Commits `89fedf61`, `b606f6a6`, `b09a2fd6` são o preço já pago. |
+| `aiops_api/modules/correlation/similarity.py` | Pesos documentados e justificados, `reasons[]`, stopwords. Só a geração de candidatos muda. |
+| `aiops_api/modules/policy/engine.py` | Semântica de precedência e postura default-deny. |
+| `eval/run_eval.py` + `eval/golden_set/` | Rubrica transparente de 4 pontos, roda in-process sem LLM/rede/DB. **Vira a suíte de aceitação da v2 no dia um.** |
+| `tests/test_honest_failures.py`, `test_provenance.py`, `test_evidence_gap.py` | Critério de aceitação de proveniência. |
+| `docs/aiops/contracts/event-envelope.mdx` | Vira definição protobuf. |
+| `keep/api/core/cel_to_sql/` | Compilador CEL→SQL com três dialetos — trabalho genuinamente bom. Usar no caminho de *query*. |
+| `keep-ui/**/__tests__/` | Suíte Jest vira especificação da UI reconstruída. |
+
+**Reescrever:** orquestrador/FSM (→ Temporal), todo acesso a DB (→ async, transações curtas), transporte do MCP gateway (→ Go), retrieval (→ pgvector híbrido), geração de candidatos de correlação (→ LSH), os cinco caches process-local (→ KV watch), caminho de ingest (→ Go + JetStream).
+
+## Roadmap
+
+Cada estágio deixa a plataforma funcionando e tem uma demo verificável.
+
+| Estágio | Escopo | Demo | Bloqueia |
+|---|---|---|---|
+| **S0 — Contratos e scaffolding** | protobuf + `buf` (Go/Py/TS), convenções OTel e métricas, lib de tenant context, stack de dev (Postgres+PgBouncer, NATS, Temporal), CI | Stack sobe inteira; contrato gera nos 3 alvos | **tudo** |
+| **S1 — Investigações duráveis** | Temporal + workers Python asyncio. FSM vira workflow, especialistas viram activities paralelas. DB async, pool explícito, PgBouncer. Proveniência obrigatória no proto. | **Matar o pod no meio da investigação — ela retoma e termina.** | S3, S5 |
+| **S2 — Retrieval** | pgvector HNSW, chunking, híbrido RRF, rerank, multi-query, indexar RCAs com feedback | Qualidade de citação lado a lado no golden set | qualidade de tudo |
+| **S3 — Barramento + ingest** | Ingest gateway Go, streams JetStream, 202-após-ack + 429, **KV substituindo os cinco caches** | Sobrecarga retorna 429, não uma mentira | S4, S6 |
+| **S4 — Regras + correlação** | `cel-go` com cache de programa + índice invertido; MinHash no ingest; LSH + Union-Find; janela online | **Tempestade de 5000 alertas correlaciona em menos de 1s** | S5 |
+| **S5 — Tool mesh** | Pools, breakers, rate limit, singleflight, propagação de deadline, audit → NATS | **Derrubar o Prometheus: investigação termina em 90s com gap honesto, não pendura 120s** | S7 |
+| **S6 — UI + providers seletivos** | UI reconstruída (Jest como spec) + os providers realmente usados, como MCP tools atrás do mesh | Plataforma autônoma | S8 |
+| **S7 — Policy GA + aprovações** | Bundle no KV, avaliação em memória, dry-run, log de decisão | Provar mecanicamente que nenhuma policy permite mutação sem aprovação | S8 |
+| **S8 — Mutação controlada** | Tools mutate em allowlist via mesh + policy, fluxo de aprovação, fail-closed testado com caos | O marco de produto | — |
+
+**Caminho crítico: S0 → S1 → S3 → S4.** S2 paraleliza com S1.
+
+**S1 é o estágio de maior valor isolado** — sozinho corrige os gargalos 1, 2, 3, 4, 6 e 7, que é a maioria do teto atual.
+
+### Gatilhos (não adotar antes de disparar)
+
+| Tecnologia | Gatilho medido |
+|---|---|
+| ClickHouse | >50M linhas de alerta retidas, **ou** job de mineração de regras >60s no Postgres |
+| Valkey/Redis | Rate limit precisar ser cluster-wide |
+| MinIO/S3 | Resultado de tool passar consistentemente de ~1MB |
+| Qdrant | >10M vetores por tenant, **ou** filtro de alta cardinalidade degradar o post-filtering do pgvector |
+| Redpanda/Kafka | >50k alertas/s sustentado, ou necessidade real de ordenação por partição |
+
+## Verificação
+
+**Por estágio** — a demo da tabela acima é o critério de aceite, executada de verdade, não descrita.
+
+**Contínuo, do S1 em diante:**
+
+1. `python -m eval.run_eval` (harness portado) — razão de úteis ≥0.6 no golden set. Falha = exit 1.
+2. Testes de proveniência portados verdes.
+3. Teste de caos no CI: matar worker no meio do workflow, asseverar que a investigação completa com o mesmo resultado.
+4. Teste de carga: N investigações concorrentes; asseverar que espera de checkout de pool fica plana e nenhuma investigação é perdida.
+5. Teste de contrato: tools Go respondem os mesmos payloads que os testes Python originais esperam.
+
+**Antes de cutover de qualquer tenant:** rodar v1 e v2 em shadow sobre o mesmo tráfego e comparar agrupamentos de correlação e qualidade de RCA no golden set.
+
+## Riscos
+
+| Risco | Mitigação |
+|---|---|
+| Três linguagens em execução solo | Serviços Go vêm depois do núcleo Python funcionar e ficam finos. Nenhum bloqueia a plataforma se travar. |
+| Determinismo do Temporal | Esperar um incidente por edição não-determinística. Replay test no CI desde o S1. |
+| Providers reconstruídos sofrem drift de API | Reconstruir só os usados; contract test por provider; orçar como imposto recorrente. |
+| Escopo total exceder a energia disponível | Cada estágio deixa a plataforma funcionando. Parar após S1+S2 já entrega a maior parte do ganho. |
