@@ -33,6 +33,47 @@ local tag — re-run the import.
 
 ## 2. Apply the manifests
 
+> **Generate the real credentials before the first apply.** Every secret in
+> `01-config.yaml` is a fake example — this repository is public, so a real
+> value there would be a published one. Applying the placeholders as-is signs
+> your API tokens and session cookies with a secret anyone can read.
+>
+> On an existing cluster it is worse than that: `KEEP_FORCE_RESET_DEFAULT_PASSWORD`
+> is `true`, so the backend reconciles the admin password from the Secret on
+> **every start**. Re-applying `01-config.yaml` unchanged resets a working
+> admin password to `example-admin-password-CHANGE-ME`.
+>
+> ```bash
+> # after the first `kubectl apply -f k8s/01-config.yaml`
+> API_KEY="$(openssl rand -base64 32 | tr -d '=+/')"
+> kubectl -n keeply patch secret keeply-secrets --type=merge -p "{\"stringData\":{
+>   \"AIOPS_WEBHOOK_SECRET\":   \"$(openssl rand -base64 32 | tr -d '=+/')\",
+>   \"KEEP_JWT_SECRET\":        \"$(openssl rand -base64 48 | tr -d '=+/')\",
+>   \"NEXTAUTH_SECRET\":        \"$(openssl rand -base64 48 | tr -d '=+/')\",
+>   \"KEEP_DEFAULT_PASSWORD\":  \"$(openssl rand -base64 18 | tr -d '=+/')\",
+>   \"AIOPS_KEEP_API_KEY\":     \"${API_KEY}\",
+>   \"KEEP_DEFAULT_API_KEYS\":  \"aiops:admin:${API_KEY}\"
+> }}"
+> kubectl -n keeply rollout restart deploy/keep-backend deploy/keep-frontend \
+>   deploy/aiops-api deploy/mcp-gateway
+> ```
+>
+> `AIOPS_KEEP_API_KEY` and the secret half of `KEEP_DEFAULT_API_KEYS` must be
+> the same string: the first is what aiops-api sends, the second is what Keep
+> provisions. They drift silently — aiops-api just starts getting 401s.
+>
+> Those values then live **only** in the cluster. Copy the generated admin
+> password into a password manager before you need it; recreating the cluster
+> loses it. To read one back:
+>
+> ```bash
+> kubectl -n keeply get secret keeply-secrets \
+>   -o jsonpath='{.data.KEEP_DEFAULT_PASSWORD}' | base64 -d
+> ```
+>
+> For anything beyond local dev, take this Secret out of the manifest set
+> entirely (SOPS or sealed-secrets) instead of patching a committed shell.
+
 ```bash
 kubectl apply -f k8s/00-rbac-and-middleware.yaml   # SA + ClusterRole + Middleware
 kubectl apply -f k8s/01-config.yaml                # ConfigMap + Secret + PVC
