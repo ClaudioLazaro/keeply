@@ -27,6 +27,11 @@ import {
   ProvenanceSummary,
   provenanceOf,
 } from "@/entities/investigation/ui/ProvenanceBadge";
+import {
+  evidenceArguments,
+  evidenceDetail,
+  targetOf,
+} from "@/entities/investigation/lib/evidenceDetail";
 import { useInvestigationFeedback } from "@/entities/investigation/model/useInvestigationFeedback";
 import { useInvestigationFeedbackActions } from "@/entities/investigation/model/useInvestigationActions";
 
@@ -49,15 +54,75 @@ function EvidenceList({ evidence }: { evidence: InvestigationEvidence[] }) {
   return (
     <ul className="space-y-1">
       {evidence.map((item) => (
-        <li key={item.id} className="text-sm flex items-start gap-2">
-          <ProvenanceBadge value={provenanceOf(item)} />
-          <span className="font-mono text-xs bg-tremor-background-muted px-1 py-0.5 rounded">
-            {item.tool}
-          </span>
-          <span className="text-tremor-content-emphasis">{item.summary}</span>
-        </li>
+        <EvidenceRow key={item.id} item={item} />
       ))}
     </ul>
+  );
+}
+
+/**
+ * One evidence row: the claim, and — on demand — what backs it.
+ *
+ * The summary alone ("get_events: 13 events returned") tells an operator that
+ * something was collected, never what. Reviewing a hypothesis means checking
+ * it against the evidence, so the evidence has to be reachable. It is
+ * collapsed by default because an investigation has dozens of these and the
+ * list has to stay scannable.
+ */
+function EvidenceRow({ item }: { item: InvestigationEvidence }) {
+  const detail = evidenceDetail(item);
+  const args = evidenceArguments(item);
+  const target = targetOf(item);
+
+  const header = (
+    <>
+      <ProvenanceBadge value={provenanceOf(item)} />
+      {target && (
+        <Badge
+          color="slate"
+          size="xs"
+          tooltip="The target that answered this call"
+        >
+          {target}
+        </Badge>
+      )}
+      <span className="font-mono text-xs bg-tremor-background-muted px-1 py-0.5 rounded">
+        {item.tool}
+      </span>
+      <span className="text-tremor-content-emphasis">{item.summary}</span>
+    </>
+  );
+
+  if (!detail && !args) {
+    return <li className="text-sm flex items-start gap-2 flex-wrap">{header}</li>;
+  }
+
+  return (
+    <li className="text-sm">
+      <details className="group">
+        <summary className="flex items-start gap-2 flex-wrap cursor-pointer list-none marker:content-none">
+          <span
+            aria-hidden
+            className="text-tremor-content text-xs mt-0.5 transition-transform group-open:rotate-90"
+          >
+            ▶
+          </span>
+          {header}
+        </summary>
+        <div className="ml-6 mt-1 space-y-1">
+          {args && (
+            <p className="text-xs text-tremor-content font-mono break-all">
+              called with: {args}
+            </p>
+          )}
+          {detail && (
+            <p className="text-xs text-tremor-content-emphasis break-words whitespace-pre-wrap">
+              {detail}
+            </p>
+          )}
+        </div>
+      </details>
+    </li>
   );
 }
 

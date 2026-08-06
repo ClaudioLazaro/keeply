@@ -31,6 +31,21 @@ export interface InvestigationEvidence {
    * column existed have none.
    */
   backend?: "live" | "stub" | "gap" | "unknown";
+  /**
+   * What the tool was asked and what it answered.
+   *
+   * The API has always returned this; the UI used to drop it and render only
+   * `summary`, so an operator saw "get_events: 13 events returned" and could
+   * not see the events. `result` also carries the target that answered
+   * (e.g. which cluster), which is what makes the provenance claim checkable
+   * rather than merely asserted.
+   */
+  payload?: {
+    arguments?: Record<string, unknown>;
+    result?: Record<string, unknown> | unknown;
+    error?: string;
+    audit_id?: string | null;
+  };
   created_at: string;
 }
 

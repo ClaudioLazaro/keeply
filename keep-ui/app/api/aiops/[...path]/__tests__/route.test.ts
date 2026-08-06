@@ -21,8 +21,8 @@ describe("aiops proxy route", () => {
     global.fetch = mockFetch;
 
     const response = await GET(
-      new NextRequest("http://localhost/api/aiops/investigations?incident_id=inc-1"),
-      { params: Promise.resolve({ path: ["investigations"] }) }
+      new NextRequest("http://localhost/api/aiops/v1/investigations?incident_id=inc-1"),
+      { params: Promise.resolve({ path: ["v1", "investigations"] }) }
     );
 
     expect(response.status).toBe(200);
@@ -45,8 +45,8 @@ describe("aiops proxy route", () => {
     );
 
     const response = await GET(
-      new NextRequest("http://localhost/api/aiops/investigations/inv-x/evidence"),
-      { params: Promise.resolve({ path: ["investigations", "inv-x", "evidence"] }) }
+      new NextRequest("http://localhost/api/aiops/v1/investigations/inv-x/evidence"),
+      { params: Promise.resolve({ path: ["v1", "investigations", "inv-x", "evidence"] }) }
     );
 
     expect(response.status).toBe(404);
@@ -59,7 +59,7 @@ describe("aiops proxy route", () => {
 
     const response = await GET(
       new NextRequest("http://localhost/api/aiops/investigations"),
-      { params: Promise.resolve({ path: ["investigations"] }) }
+      { params: Promise.resolve({ path: ["v1", "investigations"] }) }
     );
 
     expect(response.status).toBe(502);
