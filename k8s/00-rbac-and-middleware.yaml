@@ -1,31 +1,110 @@
-# ServiceAccount + RBAC for the MCP gateway to read live K8s evidence
-# (M3 AC: specialist.kubernetes with MCP_K8S_MODE=live).
-# Read-only across core/* — no write/mutate permissions anywhere.
+# ServiceAccount + RBAC for the MCP Kubernetes server to read live evidence.
+#
+# Split deliberately into two grants, because two very different things were
+# collapsed into one cluster-wide role:
+#
+#   locating a service   needs to see that pods and namespaces EXIST, anywhere
+#   reading container output  is where credentials and personal data leak
+#
+# The old single ClusterRole granted `pods/log` across every namespace, so the
+# AI plane could read the logs of every project sharing the cluster. Scoping
+# gathering to the incident fixed which namespaces we *ask* about; this fixes
+# which ones we *can* read. Application discipline and access control should
+# not be the same control.
+#
+# Events stay cluster-wide on purpose. They are metadata — scheduling, probe
+# failures, image pulls — and the most useful signal on this cluster came from
+# node-level events like FreeDiskSpaceFailed, which belong to no application
+# namespace. Hiding those to protect data they do not carry would cost real
+# diagnostic power for no privacy gain.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: keep-mcp
   namespace: keeply
 ---
+# Cluster-wide, metadata only: what exists and where.
+#
+# find_workload matches a service to its namespace by pod name — a service
+# called `identity-svc` running in a namespace called `cafecafe` is only
+# findable this way. That needs listing, not reading: `list pods` returns
+# names, phases and node placement, never container output.
+#
+# Deliberately absent: pods/log. Discovery must not imply readability.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: keep-mcp-reader
+  name: keep-mcp-locator
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "events", "namespaces"]
+    resources: ["namespaces", "pods", "events"]
     verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: keep-mcp-reader
+  name: keep-mcp-locator
 subjects:
   - kind: ServiceAccount
     name: keep-mcp
     namespace: keeply
 roleRef:
   kind: ClusterRole
+  name: keep-mcp-locator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Per-namespace: container output. One Role + RoleBinding per namespace the
+# platform is meant to read logs from.
+#
+# ADDING A NAMESPACE IS A DELIBERATE ACT. Copy the pair below and change the
+# namespace. A namespace that is not listed still shows up in find_workload —
+# so an investigation can say "the service runs in X" — but reading its logs
+# comes back as an honest evidence gap rather than someone else's data.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keep-mcp-reader
+  namespace: keeply
+rules:
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keep-mcp-reader
+  namespace: keeply
+subjects:
+  - kind: ServiceAccount
+    name: keep-mcp
+    namespace: keeply
+roleRef:
+  kind: Role
+  name: keep-mcp-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keep-mcp-reader
+  namespace: payments
+rules:
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keep-mcp-reader
+  namespace: payments
+subjects:
+  - kind: ServiceAccount
+    name: keep-mcp
+    namespace: keeply
+roleRef:
+  kind: Role
   name: keep-mcp-reader
   apiGroup: rbac.authorization.k8s.io
 ---

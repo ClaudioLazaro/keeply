@@ -106,3 +106,36 @@ def test_events_and_logs_carry_the_same_provenance():
 def test_list_clusters_lets_a_caller_discover_targets():
     names = {c.name: c.mode for c in list_clusters().clusters}
     assert names == {"demo": "stub", "prod": "live"}
+
+
+# --------------------------------------------------------------------------- #
+# Failure text — it is evidence now, so it has to read like evidence
+# --------------------------------------------------------------------------- #
+
+
+def test_a_kubernetes_api_error_is_reduced_to_its_message():
+    """ApiException stringifies to a header dump; only one sentence matters.
+
+    This text reaches the RCA prompt, where several hundred characters of
+    HTTP headers would crowd out the findings beside it.
+    """
+    from mcp_servers.k8s.server import describe_error
+
+    exc = Exception()
+    exc.status = 403
+    exc.reason = "Forbidden"
+    exc.body = (
+        '{"kind":"Status","message":"pods \\"x\\" is forbidden: cannot get '
+        'resource pods/log","code":403}'
+    )
+    described = describe_error(exc)
+    assert described == '403 Forbidden: pods "x" is forbidden: cannot get resource pods/log'
+    assert "HTTPHeaderDict" not in described
+
+
+def test_an_error_without_an_api_body_still_produces_one_line():
+    from mcp_servers.k8s.server import describe_error
+
+    described = describe_error(ValueError("something\nbroke"))
+    assert described == "ValueError: something broke"
+    assert "\n" not in described

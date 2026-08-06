@@ -24,6 +24,7 @@ see) and the orchestrator records it as such.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -94,6 +95,33 @@ mcp = MCPServer(
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True)
 
 
+def describe_error(exc: Exception) -> str:
+    """One readable line for a backend failure.
+
+    The Kubernetes client's ApiException stringifies to the status line plus
+    every response header plus the raw JSON body — several hundred characters
+    of which one sentence matters. That text is now evidence and reaches the
+    RCA prompt, where it would crowd out the findings it sits beside. So the
+    API's own ``message`` is extracted when there is one:
+
+        "403 Forbidden: pods \\"x\\" is forbidden: cannot get resource pods/log"
+
+    rather than a header dump.
+    """
+    body = getattr(exc, "body", None)
+    status = getattr(exc, "status", None)
+    reason = getattr(exc, "reason", None)
+    if body:
+        try:
+            message = json.loads(body).get("message")
+        except (ValueError, TypeError, AttributeError):
+            message = None
+        if message:
+            prefix = f"{status} {reason}: " if status else ""
+            return f"{prefix}{message}"
+    return f"{type(exc).__name__}: {exc}".replace("\n", " ")[:300]
+
+
 def _gap(model, cluster: str, error: str, **fields):
     """Build a gap result: the call failed and the absence is the finding."""
     logger.warning("evidence gap on cluster %s: %s", cluster, error)
@@ -158,7 +186,7 @@ def get_pods(cluster: str, namespace: str | None = None) -> PodsResult:
     except clusters.ClusterUnavailable as exc:
         return _gap(PodsResult, cluster, str(exc), namespace=scope)
     except Exception as exc:  # noqa: BLE001 — any backend failure is a gap, never a silent empty list
-        return _gap(PodsResult, cluster, f"{type(exc).__name__}: {exc}", namespace=scope)
+        return _gap(PodsResult, cluster, describe_error(exc), namespace=scope)
 
     return PodsResult(
         backend="live",
@@ -241,7 +269,7 @@ def get_events(
     except clusters.ClusterUnavailable as exc:
         return _gap(EventsResult, cluster, str(exc), namespace=scope)
     except Exception as exc:  # noqa: BLE001
-        return _gap(EventsResult, cluster, f"{type(exc).__name__}: {exc}", namespace=scope)
+        return _gap(EventsResult, cluster, describe_error(exc), namespace=scope)
 
     cutoff = None
     if since_minutes and since_minutes > 0:
@@ -292,7 +320,7 @@ def list_namespaces(cluster: str) -> NamespacesResult:
     except clusters.ClusterUnavailable as exc:
         return _gap(NamespacesResult, cluster, str(exc))
     except Exception as exc:  # noqa: BLE001
-        return _gap(NamespacesResult, cluster, f"{type(exc).__name__}: {exc}")
+        return _gap(NamespacesResult, cluster, describe_error(exc))
 
     return NamespacesResult(
         backend="live",
@@ -370,7 +398,7 @@ def find_workload(cluster: str, services: list[str]) -> WorkloadLocationResult:
             return _gap(WorkloadLocationResult, cluster, str(exc), unresolved=list(services))
         except Exception as exc:  # noqa: BLE001
             return _gap(
-                WorkloadLocationResult, cluster, f"{type(exc).__name__}: {exc}", unresolved=list(services)
+                WorkloadLocationResult, cluster, describe_error(exc), unresolved=list(services)
             )
 
     matches, unresolved = [], []
@@ -411,7 +439,7 @@ def get_logs(cluster: str, pod: str, namespace: str, tail_lines: int = 100) -> L
         # Includes 404 for a pod that does not exist. Reported as a gap with
         # the reason rather than as a broken server: the backend answered,
         # the resource simply is not there.
-        return _gap(LogsResult, cluster, f"{type(exc).__name__}: {exc}", pod=pod, namespace=namespace)
+        return _gap(LogsResult, cluster, describe_error(exc), pod=pod, namespace=namespace)
 
     return LogsResult(
         backend="live",
