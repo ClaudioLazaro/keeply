@@ -82,7 +82,7 @@ def test_specialist_charges_tool_call_budget():
 @pytest.mark.parametrize(
     "spec,expected_tools",
     [
-        (KubernetesSpecialist(), ("get_pods", "get_events", "get_logs")),
+        (KubernetesSpecialist(), ("get_pods", "get_events", "get_logs", "find_workload")),
         (PrometheusSpecialist(), ("prom_alerts", "prom_query", "prom_query_range")),
         (DatadogSpecialist(), ("dd_query_metrics", "dd_list_events")),
         (AwsEksSpecialist(), ("eks_list_clusters", "eks_describe_nodegroups")),

@@ -80,6 +80,42 @@ class LogsResult(ClusterScoped):
     lines: list[str] = Field(default_factory=list)
 
 
+class NamespacesResult(ClusterScoped):
+    namespaces: list[str] = Field(default_factory=list)
+
+
+# How a service was located, strongest evidence first. The value is carried
+# into the investigation so an operator can read why we looked where we did —
+# "a pod named my-service-brasil-aja6sa lives there" is checkable in a way
+# that "the model decided" is not.
+MatchReason = Literal[
+    "namespace_exact",     # a namespace has exactly this name
+    "pod_prefix",          # a pod is named <service>-<hash>, the usual k8s shape
+    "namespace_contains",  # the namespace name embeds the service, or vice versa
+    "pod_contains",        # weakest: the service name appears somewhere in a pod name
+]
+
+
+class WorkloadMatch(BaseModel):
+    service: str
+    namespace: str
+    matched_by: MatchReason = Field(description="Why this namespace was proposed for this service.")
+    sample_pod: str | None = Field(
+        default=None, description="A pod that produced the match, when one did."
+    )
+
+
+class WorkloadLocationResult(ClusterScoped):
+    """Where the named services appear to run.
+
+    ``unresolved`` matters as much as ``matches``: a service nothing could be
+    found for must not silently become a cluster-wide query.
+    """
+
+    matches: list[WorkloadMatch] = Field(default_factory=list)
+    unresolved: list[str] = Field(default_factory=list)
+
+
 class ClusterInfo(BaseModel):
     name: str
     mode: Literal["live", "stub"]

@@ -38,8 +38,11 @@ from mcp_servers.k8s.models import (
     EventsResult,
     EventSummary,
     LogsResult,
+    NamespacesResult,
     PodsResult,
     PodSummary,
+    WorkloadLocationResult,
+    WorkloadMatch,
 )
 
 logger = logging.getLogger(__name__)
@@ -221,6 +224,121 @@ def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
             )
             for e in items
         ],
+    )
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    title="List namespaces",
+    description="Namespace names in a cluster. Useful for locating where a service runs.",
+)
+def list_namespaces(cluster: str) -> NamespacesResult:
+    try:
+        spec = clusters.get(cluster)
+    except clusters.UnknownCluster as exc:
+        return _gap(NamespacesResult, cluster, str(exc))
+
+    if spec.mode == "stub":
+        names = sorted({p.namespace for p in stubs.STUB_PODS})
+        return NamespacesResult(backend="stub", cluster=cluster, namespaces=names)
+
+    try:
+        api = clusters.core_v1(spec)
+        items = api.list_namespace().items
+    except clusters.ClusterUnavailable as exc:
+        return _gap(NamespacesResult, cluster, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        return _gap(NamespacesResult, cluster, f"{type(exc).__name__}: {exc}")
+
+    return NamespacesResult(
+        backend="live",
+        cluster=cluster,
+        namespaces=sorted(ns.metadata.name for ns in items),
+    )
+
+
+def _match_service(service: str, namespaces: list[str], pods: list[tuple[str, str]]) -> WorkloadMatch | None:
+    """Locate one service, preferring the strongest evidence available.
+
+    Ordered deliberately. An exact namespace is unambiguous. A pod named
+    ``<service>-<hash>`` is the shape Kubernetes actually produces for a
+    Deployment, so it is strong evidence and it is what makes this work when
+    the namespace is named something else entirely. Substring matches come
+    last because they are the ones that produce false friends.
+    """
+    key = service.strip().lower()
+    if not key:
+        return None
+
+    for name in namespaces:
+        if name.lower() == key:
+            return WorkloadMatch(service=service, namespace=name, matched_by="namespace_exact")
+
+    for pod, namespace in pods:
+        if pod.lower().startswith(f"{key}-"):
+            return WorkloadMatch(
+                service=service, namespace=namespace, matched_by="pod_prefix", sample_pod=pod
+            )
+
+    for name in namespaces:
+        low = name.lower()
+        if key in low or low in key:
+            return WorkloadMatch(service=service, namespace=name, matched_by="namespace_contains")
+
+    for pod, namespace in pods:
+        if key in pod.lower():
+            return WorkloadMatch(
+                service=service, namespace=namespace, matched_by="pod_contains", sample_pod=pod
+            )
+    return None
+
+
+@mcp.tool(
+    annotations=READ_ONLY,
+    title="Find where services run",
+    description=(
+        "Locate the namespaces a list of services runs in, by matching namespace "
+        "names and pod names. Call this before get_pods when you know the service "
+        "but not where it lives — it turns one cluster-wide lookup into scoped "
+        "queries, and reports why each namespace was chosen."
+    ),
+)
+def find_workload(cluster: str, services: list[str]) -> WorkloadLocationResult:
+    try:
+        spec = clusters.get(cluster)
+    except clusters.UnknownCluster as exc:
+        return _gap(WorkloadLocationResult, cluster, str(exc), unresolved=list(services))
+
+    if spec.mode == "stub":
+        namespaces = sorted({p.namespace for p in stubs.STUB_PODS})
+        pods = [(p.name, p.namespace) for p in stubs.STUB_PODS]
+        backend = "stub"
+    else:
+        try:
+            api = clusters.core_v1(spec)
+            namespaces = sorted(ns.metadata.name for ns in api.list_namespace().items)
+            pods = [
+                (p.metadata.name, p.metadata.namespace)
+                for p in api.list_pod_for_all_namespaces().items
+            ]
+            backend = "live"
+        except clusters.ClusterUnavailable as exc:
+            return _gap(WorkloadLocationResult, cluster, str(exc), unresolved=list(services))
+        except Exception as exc:  # noqa: BLE001
+            return _gap(
+                WorkloadLocationResult, cluster, f"{type(exc).__name__}: {exc}", unresolved=list(services)
+            )
+
+    matches, unresolved = [], []
+    for service in services:
+        found = _match_service(service, namespaces, pods)
+        if found is None:
+            unresolved.append(service)
+        else:
+            matches.append(found)
+
+    return WorkloadLocationResult(
+        backend=backend, cluster=cluster, matches=matches, unresolved=unresolved
     )
 
 

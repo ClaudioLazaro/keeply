@@ -157,6 +157,67 @@ def _target_args(catalog: dict[str, Any], tool: str) -> dict[str, Any]:
     return {"cluster": get_settings().mcp_default_cluster}
 
 
+def _locate_services(
+    catalog: dict[str, Any],
+    invoke: InvokeFn,
+    used: BudgetTracker,
+    scope: Scope,
+) -> tuple[list[str], ToolCall | None]:
+    """Find the namespaces the incident's services actually run in.
+
+    Discovery beats convention. Mapping a service to a namespace by assuming
+    they share a name works until it doesn't — a service called
+    ``my-service-brasil`` may live in a namespace named something else
+    entirely, while a pod called ``my-service-brasil-aja6sa`` sits there
+    plainly saying so. One cluster-wide lookup answers that, and every query
+    after it is scoped.
+
+    The lookup is recorded as evidence, carrying the ``matched_by`` reason for
+    each service. That is the point of doing the matching here rather than
+    asking a model: an operator can check "we looked in `payments` because a
+    pod named `my-service-brasil-aja6sa` is running there". A grouping nobody
+    can audit is one nobody can correct.
+
+    Falls back to the configured guess when the tool is unavailable (the
+    legacy mesh has no such tool), and returns no namespaces when the incident
+    named no service — the caller then sweeps, and labels the sweep.
+    """
+    if not scope.services or "find_workload" not in catalog:
+        return list(scope.namespaces), None
+
+    args = _target_args(catalog, "find_workload")
+    args["services"] = list(scope.services)
+    call = _safe_call("find_workload", args, invoke, used)
+    if call.is_gap or not isinstance(call.result, dict):
+        # Discovery failed; the configured guess is better than a sweep.
+        return list(scope.namespaces), call
+
+    matches = call.result.get("matches") or []
+    namespaces: list[str] = []
+    reasons: list[str] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        namespace = match.get("namespace")
+        if isinstance(namespace, str) and namespace and namespace not in namespaces:
+            namespaces.append(namespace)
+        reasons.append(
+            f"{match.get('service')} -> {namespace} ({match.get('matched_by')}"
+            + (f", e.g. {match['sample_pod']}" if match.get("sample_pod") else "")
+            + ")"
+        )
+
+    unresolved = [str(s) for s in (call.result.get("unresolved") or [])]
+    summary = f"find_workload: located {len(namespaces)} namespace(s) — " + "; ".join(reasons)
+    if unresolved:
+        # Naming what could NOT be found matters: those services are absent
+        # from the evidence that follows, and silence would hide that.
+        summary += f". Not found: {', '.join(unresolved)}"
+    call.summary = summary
+
+    return namespaces or list(scope.namespaces), call
+
+
 def _select_pod(pods_result: Any) -> tuple[str, str | None] | None:
     """Pick the pod whose logs are most likely to explain the incident."""
     items = None
@@ -177,7 +238,7 @@ def _select_pod(pods_result: Any) -> tuple[str, str | None] | None:
 
 class KubernetesSpecialist:
     name = "kubernetes"
-    tools: tuple[str, ...] = ("get_pods", "get_events", "get_logs")
+    tools: tuple[str, ...] = ("get_pods", "get_events", "get_logs", "find_workload")
 
     def gather(
         self,
@@ -191,10 +252,14 @@ class KubernetesSpecialist:
         del budget  # not used directly; the tracker enforces
         calls: list[ToolCall] = []
 
+        namespaces, locate_call = _locate_services(catalog, invoke, used, scope)
+        if locate_call is not None:
+            calls.append(locate_call)
+
         # Ask each namespace the incident points at, rather than sweeping the
         # cluster and picking something afterwards. The sweep is what let a
         # stranger's CrashLoopBackOff become evidence for this incident.
-        for namespace in scope.namespaces or [None]:
+        for namespace in namespaces or [None]:
             for tool in ("get_pods", "get_events"):
                 args = _target_args(catalog, tool)
                 if namespace and _accepts(catalog, tool, "namespace"):

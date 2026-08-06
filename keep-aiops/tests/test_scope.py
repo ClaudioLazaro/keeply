@@ -149,3 +149,118 @@ def test_legacy_tools_without_a_schema_are_still_scoped():
     assert any(args.get("namespace") == "payments" for _tool, args in seen)
     # ...and no cluster, since that schema does not require one.
     assert all("cluster" not in args for _tool, args in seen)
+
+
+# --------------------------------------------------------------------------- #
+# Discovery — finding where a service actually runs
+# --------------------------------------------------------------------------- #
+
+from mcp_servers.k8s.server import _match_service  # noqa: E402
+
+DISCOVERY_CATALOG = dict(CATALOG)
+DISCOVERY_CATALOG["find_workload"] = {
+    "name": "find_workload",
+    "execution_class": "read",
+    "input_schema": {"properties": {"cluster": {}, "services": {}}, "required": ["cluster", "services"]},
+}
+
+
+def test_a_pod_name_locates_a_service_whose_namespace_is_named_differently():
+    """The case that breaks the name-guess: my-service-brasil in ns 'brasil-prod'."""
+    match = _match_service(
+        "my-service-brasil",
+        namespaces=["default", "brasil-prod", "kube-system"],
+        pods=[("my-service-brasil-aja6sa", "brasil-prod"), ("other-x1", "default")],
+    )
+    assert match.namespace == "brasil-prod"
+    assert match.matched_by == "pod_prefix"
+    assert match.sample_pod == "my-service-brasil-aja6sa"
+
+
+def test_an_exact_namespace_wins_over_a_pod_match():
+    """Strongest evidence first: an exactly-named namespace is unambiguous."""
+    match = _match_service(
+        "payments",
+        namespaces=["payments", "other"],
+        pods=[("payments-abc123", "other")],
+    )
+    assert match.matched_by == "namespace_exact"
+    assert match.namespace == "payments"
+
+
+def test_a_service_that_is_nowhere_is_reported_as_unfound():
+    assert _match_service("ghost", namespaces=["a", "b"], pods=[("x-1", "a")]) is None
+
+
+def test_specialist_queries_the_discovered_namespace_not_the_service_name():
+    seen: list = []
+
+    def invoke(tool, arguments):
+        seen.append((tool, arguments))
+        if tool == "find_workload":
+            return {
+                "backend": "live",
+                "cluster": "prod",
+                "matches": [{
+                    "service": "my-service-brasil",
+                    "namespace": "brasil-prod",
+                    "matched_by": "pod_prefix",
+                    "sample_pod": "my-service-brasil-aja6sa",
+                }],
+                "unresolved": [],
+            }, None
+        if tool == "get_pods":
+            return {"backend": "live", "pods": [{"name": "p", "namespace": arguments.get("namespace")}]}, None
+        if tool == "get_events":
+            return {"backend": "live", "events": []}, None
+        return {"backend": "live", "lines": []}, None
+
+    result = KubernetesSpecialist().gather(
+        catalog=DISCOVERY_CATALOG, invoke=invoke, budget=Budget(), used=_tracker(),
+        scope=Scope(cluster="prod", services=("my-service-brasil",), namespaces=("my-service-brasil",)),
+    )
+    queried = {a.get("namespace") for t, a in seen if t == "get_pods"}
+    assert queried == {"brasil-prod"}, "should use the discovered namespace, not the service name"
+
+    # The lookup itself is evidence, and it says why.
+    locate = next(c for c in result.calls if c.tool == "find_workload")
+    assert "pod_prefix" in locate.summary
+    assert "my-service-brasil-aja6sa" in locate.summary
+
+
+def test_services_that_could_not_be_located_are_named_in_the_evidence():
+    """Silence about a missing service would hide a hole in the analysis."""
+    def invoke(tool, arguments):
+        if tool == "find_workload":
+            return {"backend": "live", "cluster": "p", "matches": [], "unresolved": ["ghost-svc"]}, None
+        return {"backend": "live", "pods": [], "events": [], "lines": []}, None
+
+    result = KubernetesSpecialist().gather(
+        catalog=DISCOVERY_CATALOG, invoke=invoke, budget=Budget(), used=_tracker(),
+        scope=Scope(cluster="p", services=("ghost-svc",)),
+    )
+    locate = next(c for c in result.calls if c.tool == "find_workload")
+    assert "Not found: ghost-svc" in locate.summary
+
+
+def test_discovery_failure_falls_back_to_the_configured_guess():
+    """A broken lookup must not escalate into a cluster-wide sweep."""
+    def invoke(tool, arguments):
+        if tool == "find_workload":
+            raise RuntimeError("gateway down")
+        return {"backend": "live", "pods": [], "events": [], "lines": []}, None
+
+    seen_ns = []
+
+    def recording(tool, arguments):
+        if tool == "find_workload":
+            raise RuntimeError("gateway down")
+        seen_ns.append(arguments.get("namespace"))
+        return {"backend": "live", "pods": [], "events": [], "lines": []}, None
+
+    KubernetesSpecialist().gather(
+        catalog=DISCOVERY_CATALOG, invoke=recording, budget=Budget(), used=_tracker(),
+        scope=Scope(cluster="p", services=("payments",), namespaces=("payments",)),
+    )
+    assert "payments" in seen_ns
+    assert None not in seen_ns

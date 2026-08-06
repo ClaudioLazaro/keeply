@@ -47,6 +47,28 @@ against your incident and stamped `live`.
 
 Call `list_clusters` to discover valid names.
 
+### Locating a service
+
+`find_workload` answers "where does this service run?" by matching namespace
+names and pod names, and reports *why* each candidate matched:
+
+```
+identity-svc -> cafecafe (pod_prefix, e.g. identity-svc-86674fc54-npw7v)
+```
+
+Match strength, strongest first: an exactly-named namespace; a pod named
+`<service>-<hash>` (the shape a Deployment actually produces); a namespace
+whose name embeds the service; a pod name containing it. Assuming service name
+== namespace name breaks the moment they differ, which is common — the example
+above is real.
+
+The matching is deterministic rather than delegated to a model, for the same
+reason alert correlation is: an operator has to be able to check "we looked in
+`cafecafe` because a pod named `identity-svc-86674fc54-npw7v` runs there". A
+choice nobody can audit is one nobody can correct. The tools are still exposed
+over MCP, so an agent can drive them directly when the naming is genuinely
+unguessable.
+
 ```bash
 export MCP_K8S_CLUSTERS='[
   {"name":"prod-eu","context":"arn:aws:eks:eu-west-1:...","mode":"live"},
