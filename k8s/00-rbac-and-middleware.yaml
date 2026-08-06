@@ -53,12 +53,32 @@ roleRef:
   name: keep-mcp-locator
   apiGroup: rbac.authorization.k8s.io
 ---
-# Per-namespace: container output.
+# Container output — granted cluster-wide, deliberately.
 #
-# The rule is defined ONCE as a ClusterRole and bound per namespace. A
-# ClusterRole referenced by a RoleBinding grants only within that namespace,
-# which is the idiomatic way to say "this same read, here" without copying the
-# rule per project and letting the copies drift.
+# Every namespace here belongs to the same owner, and an AIOps platform that
+# cannot read the logs of the workloads it investigates is doing half an
+# investigation: it can report that a pod is CrashLoopBackOff and never say
+# why. That trade was made knowingly.
+#
+# It is kept as its own ClusterRole rather than folded back into the locator
+# role for two reasons. The original grant hid `pods/log` inside a list of
+# four resources, where nothing marked it as the sensitive one; here the
+# sensitive capability has its own name, its own binding, and this comment.
+# And narrowing it later is a small, local edit — see below.
+#
+# WHAT THIS ALLOWS: reading the container output of every pod on the cluster,
+# which is where credentials, tokens and personal data show up. That output
+# becomes evidence, is stored in the investigation payload, and is sent to
+# whichever LLM provider is configured.
+#
+# TO NARROW IT: delete the ClusterRoleBinding below and replace it with one
+# RoleBinding per readable namespace, same roleRef — a ClusterRole referenced
+# by a RoleBinding grants only inside that namespace.
+#
+#   kind: RoleBinding
+#   metadata: {name: keep-mcp-log-reader, namespace: <ns>}
+#   subjects: [{kind: ServiceAccount, name: keep-mcp, namespace: keeply}]
+#   roleRef: {kind: ClusterRole, name: keep-mcp-log-reader, apiGroup: rbac.authorization.k8s.io}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -68,33 +88,10 @@ rules:
     resources: ["pods/log"]
     verbs: ["get", "list"]
 ---
-# ADDING A NAMESPACE IS A DELIBERATE ACT — and it is this block, nothing else.
-# Copy it, change the two `namespace:` values, apply.
-#
-# A namespace that is not bound here still appears in find_workload, so an
-# investigation can still report "the service runs in X". Reading its logs
-# comes back as an honest evidence gap carrying the API's own message
-# ("is forbidden: cannot get resource pods/log"), not as an empty result that
-# would read like "this pod logged nothing".
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: keep-mcp-log-reader
-  namespace: keeply
-subjects:
-  - kind: ServiceAccount
-    name: keep-mcp
-    namespace: keeply
-roleRef:
-  kind: ClusterRole
-  name: keep-mcp-log-reader
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: keep-mcp-log-reader
-  namespace: payments
 subjects:
   - kind: ServiceAccount
     name: keep-mcp
