@@ -26,8 +26,30 @@ class Settings(BaseSettings):
     webhook_secret: str = "dev-webhook-secret"  # HMAC key shared with Keep outbox dispatcher
     auto_investigate_severities: set[str] = {"critical", "high"}
 
-    # MCP mesh
-    mcp_gateway_url: str = "http://localhost:8090"
+    # MCP mesh.
+    #
+    # "legacy" keeps the hand-rolled HTTP gateway (mcp_gateway/). "mcp" routes
+    # through ContextForge over the real protocol. Both are wired so the
+    # cutover — and the rollback — is this one variable.
+    mcp_transport: str = "legacy"
+    mcp_gateway_url: str = "http://localhost:8090"  # legacy transport
+    # ContextForge virtual-server endpoint, e.g.
+    # http://mcp-gateway:4444/servers/<uuid>/mcp
+    mcp_server_url: str = ""
+    mcp_bearer_token: str = ""
+    # Cluster the Kubernetes specialist inspects, as named in the MCP server's
+    # registry. Configuration rather than inference: deriving it from the
+    # incident's affected services is the next step, and until then a declared
+    # target beats the previous behaviour of answering about whichever cluster
+    # the gateway happened to run in.
+    mcp_default_cluster: str = "in-cluster"
+    # Tools we assert are read-only, as fnmatch patterns over the federated
+    # name. This is an allowlist, not a hint we read off the tool: a federated
+    # server is not necessarily one we control, and ContextForge drops MCP
+    # annotations in transit anyway. Anything unmatched is treated as mutating
+    # and denied by the suggest-only policy, so adding a server is a
+    # deliberate act.
+    mcp_trusted_read_only_tools: list[str] = ["keeply-k8s-*"]
 
     # Context builder (M2)
     context_timeline_limit: int = 50

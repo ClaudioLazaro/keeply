@@ -19,6 +19,8 @@ Flow for a single investigation run:
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, Callable
 
 import httpx
@@ -155,6 +157,48 @@ class _NullCtx:
             close()
 
 
+@contextmanager
+def _mesh(
+    *,
+    gateway_url: str,
+    tenant_id: str,
+    investigation_id: str,
+    client_factory: Callable[[], Any] | None,
+) -> Iterator[tuple[dict[str, dict[str, Any]], Callable[..., Any]]]:
+    """Yield ``(catalog, invoke)`` from whichever tool mesh is configured.
+
+    Two transports live side by side on purpose. ``AIOPS_MCP_TRANSPORT=mcp``
+    routes through ContextForge over real MCP; the default keeps the legacy
+    HTTP gateway, so the cutover is one environment variable and so is the
+    rollback. An injected ``client_factory`` always means the legacy path —
+    that is how tests supply a fake gateway, and a test double should not be
+    silently bypassed by an environment setting.
+    """
+    from aiops_api.settings import get_settings
+
+    settings = get_settings()
+    if client_factory is None and settings.mcp_transport == "mcp":
+        from aiops_api.modules.specialists.mcp_client import mcp_mesh
+
+        with mcp_mesh(
+            url=settings.mcp_server_url,
+            token=settings.mcp_bearer_token,
+            tenant_id=tenant_id,
+            investigation_id=investigation_id,
+            timeout=INVESTIGATION_TIMEOUT,
+            trusted_read_only=settings.mcp_trusted_read_only_tools,
+        ) as pair:
+            yield pair
+        return
+
+    factory = client_factory or (lambda: httpx.Client(timeout=INVESTIGATION_TIMEOUT))
+    client = factory()
+    ctx = client if hasattr(client, "__enter__") else _NullCtx(client)
+    with ctx as active:
+        catalog = _fetch_tool_catalog(active, gateway_url)
+        yield catalog, _make_invoke(active, gateway_url, catalog, tenant_id, investigation_id)
+
+
 def run_specialists(
     *,
     investigation_id: str,
@@ -196,18 +240,18 @@ def run_specialists(
     results: list[SpecialistResult] = []
     evidence: list[Evidence] = []
 
-    factory = client_factory or (lambda: httpx.Client(timeout=INVESTIGATION_TIMEOUT))
-    client = factory()
-    ctx = client if hasattr(client, "__enter__") else _NullCtx(client)
-    with ctx as active:
-        catalog = _fetch_tool_catalog(active, gateway_url)
+    with _mesh(
+        gateway_url=gateway_url,
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        client_factory=client_factory,
+    ) as (catalog, invoke):
         applicable = [spec for spec in specialists if any(t in catalog for t in spec.tools)]
         if not applicable:
             logger.warning(
                 "no specialists match the live MCP catalog",
                 extra={"investigation_id": investigation_id, "specialists": [s.name for s in specialists]},
             )
-        invoke = _make_invoke(active, gateway_url, catalog, tenant_id, investigation_id)
 
         for specialist in applicable:
             with investigation_span(

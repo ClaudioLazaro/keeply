@@ -29,6 +29,7 @@ import os
 
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import ToolAnnotations
 
 from mcp_servers.k8s import clusters, stubs
 from mcp_servers.k8s.models import (
@@ -80,6 +81,14 @@ mcp = MCPServer(
 )
 
 
+# Every tool on this server only reads. Declaring it in the protocol is what
+# lets the policy gate derive execution_class from the catalog itself instead
+# of a table it has to be kept in sync with. The gate stays fail-closed: a
+# tool that does NOT carry this is treated as mutating and denied, so
+# forgetting the annotation makes a tool unavailable rather than unguarded.
+READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True)
+
+
 def _gap(model, cluster: str, error: str, **fields):
     """Build a gap result: the call failed and the absence is the finding."""
     logger.warning("evidence gap on cluster %s: %s", cluster, error)
@@ -101,6 +110,7 @@ def _pod_reason(pod) -> str | None:
 
 
 @mcp.tool(
+    annotations=READ_ONLY,
     title="List clusters",
     description="Registered clusters this server can inspect, and whether each serves live or stub data.",
 )
@@ -114,6 +124,7 @@ def list_clusters() -> ClustersResult:
 
 
 @mcp.tool(
+    annotations=READ_ONLY,
     title="Get pods",
     description=(
         "Pods in a cluster, optionally filtered to one namespace. Prefer passing "
@@ -165,6 +176,7 @@ def get_pods(cluster: str, namespace: str | None = None) -> PodsResult:
 
 
 @mcp.tool(
+    annotations=READ_ONLY,
     title="Get events",
     description="Recent Kubernetes events in a cluster, optionally filtered to one namespace.",
 )
@@ -213,6 +225,7 @@ def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
 
 
 @mcp.tool(
+    annotations=READ_ONLY,
     title="Get pod logs",
     description="Tail the logs of one pod. Namespace is required — the interesting pod is rarely in 'default'.",
 )

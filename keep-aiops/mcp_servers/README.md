@@ -97,7 +97,19 @@ works; `associatedTools` is **silently ignored** and you get a server with an
 empty tool list and no error. The response field is camelCase, which makes
 this easy to get backwards.
 
-**5. Errors are generic by default.** Every failure above returns
+**5. Federation drops tool annotations.** Our tools declare
+`annotations.readOnlyHint = true`; read directly from the server they carry it,
+read through ContextForge every hint is `None`. `outputSchema` survives the hop,
+annotations do not.
+
+So the policy gate cannot derive privilege from what a tool claims. It uses
+`AIOPS_MCP_TRUSTED_READ_ONLY_TOOLS`, an fnmatch allowlist over federated names,
+and treats everything unmatched as mutating. That is the better design anyway —
+a mesh federates servers we do not control, and a hostile one could simply
+declare itself read-only. Annotations are still honoured *downward*: a tool
+declaring itself destructive is demoted even when allowlisted.
+
+**6. Errors are generic by default.** Every failure above returns
 `{"detail":"An error occurred, please try again."}`. Run ContextForge with
 `LOG_LEVEL=DEBUG` before debugging anything.
 

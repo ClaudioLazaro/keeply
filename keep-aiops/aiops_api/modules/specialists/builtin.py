@@ -114,6 +114,37 @@ def _pod_trouble_score(pod: Any) -> int:
     return score
 
 
+def _requires(catalog: dict[str, Any], tool: str, argument: str) -> bool:
+    """Whether the live catalog says this tool requires this argument.
+
+    Lets one specialist serve both tool meshes. The legacy HTTP tools resolved
+    their Kubernetes target implicitly and took no ``cluster``; the MCP server
+    requires it, precisely so the target can never be implicit again. Reading
+    the schema instead of branching on a transport flag means the specialist
+    keeps working through either, and keeps working when a tool's contract
+    tightens.
+    """
+    entry = catalog.get(tool) or {}
+    schema = entry.get("input_schema") or entry.get("inputSchema") or {}
+    return argument in (schema.get("required") or [])
+
+
+def _target_args(catalog: dict[str, Any], tool: str) -> dict[str, Any]:
+    """Cluster scoping for tools that demand it.
+
+    The cluster name is configuration today (``AIOPS_MCP_DEFAULT_CLUSTER``).
+    Deriving it from the incident's affected services is the next step and the
+    one that actually closes the gap — a configured default is still a single
+    target, it is just an *honest* one: it is declared, and every result says
+    which cluster answered rather than leaving it to be inferred.
+    """
+    if not _requires(catalog, tool, "cluster"):
+        return {}
+    from aiops_api.settings import get_settings
+
+    return {"cluster": get_settings().mcp_default_cluster}
+
+
 def _select_pod(pods_result: Any) -> tuple[str, str | None] | None:
     """Pick the pod whose logs are most likely to explain the incident."""
     items = None
@@ -145,17 +176,19 @@ class KubernetesSpecialist:
         used: BudgetTracker,
     ) -> SpecialistResult:
         del budget  # not used directly; the tracker enforces
-        del catalog  # policy gate is in the gateway; specialist just calls
         calls: list[ToolCall] = []
-        pods_call = _safe_call("get_pods", {}, invoke, used)
+        # Scope comes from the catalog: the MCP tools require an explicit
+        # cluster, the legacy ones take none.
+        pods_call = _safe_call("get_pods", _target_args(catalog, "get_pods"), invoke, used)
         calls.append(pods_call)
-        calls.append(_safe_call("get_events", {}, invoke, used))
+        calls.append(_safe_call("get_events", _target_args(catalog, "get_events"), invoke, used))
 
         selected = _select_pod(pods_call.result) if not pods_call.is_gap else None
         pod_name, pod_namespace = selected if selected else (None, None)
 
         if pod_name:
             logs_args: dict[str, Any] = {"pod": pod_name, "tail_lines": 100}
+            logs_args.update(_target_args(catalog, "get_logs"))
             # Namespace is required: get_logs defaults to "default", and the
             # most interesting pod is rarely there.
             if pod_namespace:
