@@ -11,7 +11,15 @@ import logging
 import re
 from typing import Any
 
-from aiops_api.modules.rca.draft import build_citations, item_field, item_id, render_draft
+from aiops_api.modules.rca.draft import (
+    DETAIL_MAX_CHARS,
+    DETAIL_TOTAL_MAX_CHARS,
+    build_citations,
+    evidence_detail,
+    item_field,
+    item_id,
+    render_draft,
+)
 from aiops_api.modules.rca.fallback import deterministic_rca
 from aiops_api.modules.rca.provenance import annotate_hypotheses
 from aiops_api.modules.rca.schemas import LlmRcaResponse
@@ -86,9 +94,18 @@ def _llm_user_prompt(
     evidence_labels = {v: k for k, v in citations["evidence"].items()}
     knowledge_labels = {v: k for k, v in citations["knowledge"].items()}
     lines = [f"Incident: {json.dumps(incident, default=str)}", "", "Evidence:"]
+    # Budgeted across all items: the earliest evidence is the most relevant
+    # (specialists run in priority order), so exhausting the budget degrades
+    # to summary-only for the tail rather than truncating the head.
+    remaining = DETAIL_TOTAL_MAX_CHARS
     for item in evidence:
         marker = evidence_labels.get(item_id(item), "?")
         lines.append(f"[{marker}] {item_field(item, 'tool')}: {item_field(item, 'summary')}")
+        if remaining > 0:
+            detail = evidence_detail(item, max_chars=min(DETAIL_MAX_CHARS, remaining))
+            if detail:
+                lines.append(f"      {detail}")
+                remaining -= len(detail)
     lines.append("")
     lines.append("Knowledge documents:")
     for item in knowledge:

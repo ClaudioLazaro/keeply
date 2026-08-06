@@ -25,6 +25,62 @@ def item_field(item: Any, field: str, default: Any = "") -> Any:
     return getattr(item, field, default)
 
 
+# One evidence item's worth of detail, and the ceiling across all of them.
+# Generous enough that a pod list or a warning event still says what it was,
+# tight enough that ten specialists cannot crowd out the incident itself.
+DETAIL_MAX_CHARS = 700
+DETAIL_TOTAL_MAX_CHARS = 8000
+DETAIL_MAX_LIST_ITEMS = 5
+
+
+def _compact(value: Any, limit: int) -> str:
+    text = str(value).replace("\n", " ").strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def evidence_detail(item: Any, *, max_chars: int = DETAIL_MAX_CHARS) -> str:
+    """Render what an evidence item actually found, bounded.
+
+    The LLM prompt used to carry only the summary line, so a model reasoning
+    about an outage was handed ``get_events: 13 events returned`` and nothing
+    else — while the deterministic fallback, which dumps the whole payload,
+    could see the BackOff and the OOMKilled. The more capable reasoner was
+    getting strictly less to reason with.
+
+    Bounded rather than dumped: a payload of 200 pods would drown the incident
+    it is supposed to explain, and truncation is visible (``…``) so the model
+    is not misled into thinking it saw everything.
+    """
+    payload = item_field(item, "payload", default=None)
+    if not isinstance(payload, dict):
+        return ""
+
+    error = payload.get("error")
+    if error:
+        return _compact(f"failed: {error}", max_chars)
+
+    result = payload.get("result")
+    if result is None:
+        return ""
+    if not isinstance(result, dict):
+        return _compact(result, max_chars)
+
+    parts: list[str] = []
+    for key, value in result.items():
+        # Provenance is reported separately and would only add noise here.
+        if key in ("backend", "cluster"):
+            continue
+        if isinstance(value, list):
+            if not value:
+                continue
+            shown = [_compact(entry, 160) for entry in value[:DETAIL_MAX_LIST_ITEMS]]
+            more = len(value) - len(shown)
+            parts.append(f"{key}: " + " | ".join(shown) + (f" (+{more} more)" if more > 0 else ""))
+        elif value not in (None, "", {}):
+            parts.append(f"{key}: {_compact(value, 160)}")
+    return _compact("; ".join(parts), max_chars)
+
+
 def build_citations(evidence: list[Any], knowledge: list[Any]) -> dict[str, dict[str, str]]:
     """Assign E1..En / K1..Km labels in input order."""
     return {

@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -178,12 +180,45 @@ def get_pods(cluster: str, namespace: str | None = None) -> PodsResult:
     )
 
 
+def _rank_events(events: list[EventSummary], limit: int) -> list[EventSummary]:
+    warnings = sorted(
+        (e for e in events if (e.type or "").lower() == "warning"),
+        key=lambda e: e.last_timestamp or "",
+        reverse=True,
+    )
+    others = sorted(
+        (e for e in events if (e.type or "").lower() != "warning"),
+        key=lambda e: e.last_timestamp or "",
+        reverse=True,
+    )
+    return (warnings + others)[:limit]
+
+
+def _within_window(event_time: Any, cutoff: Any) -> bool:
+    if cutoff is None or event_time is None:
+        return True
+    try:
+        return event_time >= cutoff
+    except TypeError:  # naive/aware mismatch — keep it rather than drop it
+        return True
+
+
 @mcp.tool(
     annotations=READ_ONLY,
     title="Get events",
-    description="Recent Kubernetes events in a cluster, optionally filtered to one namespace.",
+    description=(
+        "Recent Kubernetes events, optionally scoped to one namespace. Warnings "
+        "come first, then most recent. Narrow `since_minutes` to the incident's "
+        "own window — events from an hour earlier are noise that reads like "
+        "evidence."
+    ),
 )
-def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
+def get_events(
+    cluster: str,
+    namespace: str | None = None,
+    since_minutes: int = 60,
+    limit: int = 50,
+) -> EventsResult:
     scope = namespace or "all"
     try:
         spec = clusters.get(cluster)
@@ -192,7 +227,9 @@ def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
 
     if spec.mode == "stub":
         events = [e for e in stubs.STUB_EVENTS if not namespace or e.namespace == namespace]
-        return EventsResult(backend="stub", cluster=cluster, namespace=scope, events=events)
+        return EventsResult(
+            backend="stub", cluster=cluster, namespace=scope, events=_rank_events(events, limit)
+        )
 
     try:
         api = clusters.core_v1(spec)
@@ -206,11 +243,11 @@ def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
     except Exception as exc:  # noqa: BLE001
         return _gap(EventsResult, cluster, f"{type(exc).__name__}: {exc}", namespace=scope)
 
-    return EventsResult(
-        backend="live",
-        cluster=cluster,
-        namespace=scope,
-        events=[
+    cutoff = None
+    if since_minutes and since_minutes > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=since_minutes)
+
+    summaries = [
             EventSummary(
                 type=e.type,
                 reason=e.reason,
@@ -222,8 +259,15 @@ def get_events(cluster: str, namespace: str | None = None) -> EventsResult:
                 count=e.count or 0,
                 last_timestamp=str(e.last_timestamp) if e.last_timestamp else None,
             )
-            for e in items
-        ],
+        for e in items
+        if _within_window(e.last_timestamp, cutoff)
+    ]
+
+    return EventsResult(
+        backend="live",
+        cluster=cluster,
+        namespace=scope,
+        events=_rank_events(summaries, limit),
     )
 
 
