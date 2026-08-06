@@ -53,59 +53,55 @@ roleRef:
   name: keep-mcp-locator
   apiGroup: rbac.authorization.k8s.io
 ---
-# Per-namespace: container output. One Role + RoleBinding per namespace the
-# platform is meant to read logs from.
+# Per-namespace: container output.
 #
-# ADDING A NAMESPACE IS A DELIBERATE ACT. Copy the pair below and change the
-# namespace. A namespace that is not listed still shows up in find_workload —
-# so an investigation can say "the service runs in X" — but reading its logs
-# comes back as an honest evidence gap rather than someone else's data.
+# The rule is defined ONCE as a ClusterRole and bound per namespace. A
+# ClusterRole referenced by a RoleBinding grants only within that namespace,
+# which is the idiomatic way to say "this same read, here" without copying the
+# rule per project and letting the copies drift.
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
-  name: keep-mcp-reader
-  namespace: keeply
+  name: keep-mcp-log-reader
 rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list"]
 ---
+# ADDING A NAMESPACE IS A DELIBERATE ACT — and it is this block, nothing else.
+# Copy it, change the two `namespace:` values, apply.
+#
+# A namespace that is not bound here still appears in find_workload, so an
+# investigation can still report "the service runs in X". Reading its logs
+# comes back as an honest evidence gap carrying the API's own message
+# ("is forbidden: cannot get resource pods/log"), not as an empty result that
+# would read like "this pod logged nothing".
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: keep-mcp-reader
+  name: keep-mcp-log-reader
   namespace: keeply
 subjects:
   - kind: ServiceAccount
     name: keep-mcp
     namespace: keeply
 roleRef:
-  kind: Role
-  name: keep-mcp-reader
+  kind: ClusterRole
+  name: keep-mcp-log-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: keep-mcp-reader
-  namespace: payments
-rules:
-  - apiGroups: [""]
-    resources: ["pods/log"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: keep-mcp-reader
+  name: keep-mcp-log-reader
   namespace: payments
 subjects:
   - kind: ServiceAccount
     name: keep-mcp
     namespace: keeply
 roleRef:
-  kind: Role
-  name: keep-mcp-reader
+  kind: ClusterRole
+  name: keep-mcp-log-reader
   apiGroup: rbac.authorization.k8s.io
 ---
 # Traefik middlewares (mirrors cafecafe-security-headers pattern).
