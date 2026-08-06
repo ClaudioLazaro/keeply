@@ -31,6 +31,7 @@ from aiops_api.modules.policy import assert_tool_allowed
 from aiops_api.modules.specialists.base import (
     Budget,
     BudgetExceeded,
+    Scope,
     SpecialistResult,
     ToolCall,
 )
@@ -205,6 +206,7 @@ def run_specialists(
     tenant_id: str,
     gateway_url: str,
     budget: Budget,
+    scope: Scope | None = None,
     specialists: tuple[Any, ...] | None = None,
     client_factory: Callable[[], Any] | None = None,
 ) -> tuple[list[Evidence], list[SpecialistResult], BudgetTracker]:
@@ -266,6 +268,7 @@ def run_specialists(
                         invoke=invoke,
                         budget=budget,
                         used=tracker,
+                        scope=scope or Scope(),
                     )
                 except BudgetExceeded:
                     raise

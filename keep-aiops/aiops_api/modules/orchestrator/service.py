@@ -237,15 +237,21 @@ def run_investigation(investigation_id: str) -> None:
         with investigation_span(investigation_id, tenant_id=tenant_id, incident_id=incident_id):
             with session_scope() as session:
                 investigation = session.get(Investigation, investigation_id)
-                evidence, tracker = _gather_phase(investigation, settings, budget)
-                for item in evidence:
-                    session.add(item)
+                # Context first, then gather. The order used to be reversed,
+                # so specialists went looking for evidence before anything
+                # knew what the incident was about — which is why they could
+                # only sweep. The pack is what gathering is aimed with.
+                evidence = []
                 context_gap = _build_and_store_context_pack(
                     investigation, tenant_id, incident_id, settings
                 )
                 if context_gap is not None:
                     evidence.append(context_gap)
                     session.add(context_gap)
+                gathered, tracker = _gather_phase(investigation, settings, budget)
+                evidence.extend(gathered)
+                for item in gathered:
+                    session.add(item)
                 _set_status(session, investigation, "hypothesizing")
                 knowledge_results, knowledge_gap = _query_knowledge_safe(
                     investigation, evidence
@@ -322,12 +328,22 @@ def _gather_phase(
     coordinator is a pure function over the gateway. The returned tracker
     is the same one the coordinator used, so the LLM phase can charge the
     same budget.
+
+    The scope comes from the context pack, which is why the pack is built
+    first: it is what tells a specialist which namespaces belong to this
+    incident instead of querying whatever the credential can reach.
     """
+    from aiops_api.modules.specialists.scope import from_context_pack
+
+    scope = from_context_pack(
+        investigation.context_pack, cluster=settings.mcp_default_cluster
+    )
     evidence, _results, tracker = run_specialists(
         investigation_id=investigation.id,
         tenant_id=investigation.tenant_id,
         gateway_url=settings.mcp_gateway_url,
         budget=budget,
+        scope=scope,
     )
     return evidence, tracker
 

@@ -17,6 +17,7 @@ from typing import Any, Callable
 from aiops_api.modules.specialists.base import (
     Budget,
     BudgetTracker,
+    Scope,
     Specialist,
     SpecialistResult,
     ToolCall,
@@ -129,6 +130,17 @@ def _requires(catalog: dict[str, Any], tool: str, argument: str) -> bool:
     return argument in (schema.get("required") or [])
 
 
+def _accepts(catalog: dict[str, Any], tool: str, argument: str) -> bool:
+    """Whether the tool takes this argument at all, per the live catalog."""
+    entry = catalog.get(tool) or {}
+    schema = entry.get("input_schema") or entry.get("inputSchema") or {}
+    properties = schema.get("properties")
+    # A tool with no published schema is assumed to accept it: the legacy
+    # gateway published none and took `namespace` happily, and passing an
+    # argument that is ignored is harmless next to not scoping at all.
+    return argument in properties if isinstance(properties, dict) else True
+
+
 def _target_args(catalog: dict[str, Any], tool: str) -> dict[str, Any]:
     """Cluster scoping for tools that demand it.
 
@@ -174,16 +186,34 @@ class KubernetesSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget  # not used directly; the tracker enforces
         calls: list[ToolCall] = []
-        # Scope comes from the catalog: the MCP tools require an explicit
-        # cluster, the legacy ones take none.
-        pods_call = _safe_call("get_pods", _target_args(catalog, "get_pods"), invoke, used)
-        calls.append(pods_call)
-        calls.append(_safe_call("get_events", _target_args(catalog, "get_events"), invoke, used))
 
-        selected = _select_pod(pods_call.result) if not pods_call.is_gap else None
+        # Ask each namespace the incident points at, rather than sweeping the
+        # cluster and picking something afterwards. The sweep is what let a
+        # stranger's CrashLoopBackOff become evidence for this incident.
+        for namespace in scope.namespaces or [None]:
+            for tool in ("get_pods", "get_events"):
+                args = _target_args(catalog, tool)
+                if namespace and _accepts(catalog, tool, "namespace"):
+                    args["namespace"] = namespace
+                call = _safe_call(tool, args, invoke, used)
+                if namespace is None and not call.is_gap:
+                    # Say it plainly: this is everything the credential can
+                    # see, not the incident's blast radius.
+                    call.summary = (
+                        f"{_summarize(tool, call.result)} "
+                        "(UNSCOPED — the incident named no service to aim at)"
+                    )
+                calls.append(call)
+
+        pods_call = next(
+            (c for c in calls if c.tool == "get_pods" and not c.is_gap and _select_pod(c.result)),
+            next((c for c in calls if c.tool == "get_pods"), None),
+        )
+        selected = _select_pod(pods_call.result) if pods_call and not pods_call.is_gap else None
         pod_name, pod_namespace = selected if selected else (None, None)
 
         if pod_name:
@@ -231,8 +261,10 @@ class PrometheusSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = []
         calls.append(_safe_call("prom_alerts", {}, invoke, used))
         calls.append(
@@ -277,8 +309,10 @@ class DatadogSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "dd_query_metrics",
@@ -317,8 +351,10 @@ class AwsEksSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("eks_list_clusters", {}, invoke, used),
             _safe_call("eks_describe_nodegroups", {"cluster_name": "payments-prod"}, invoke, used),
@@ -347,8 +383,10 @@ class AwsRdsSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("rds_list_instances", {}, invoke, used),
             _safe_call("rds_describe_instance_status", {"instance_id": "payments-db"}, invoke, used),
@@ -377,8 +415,10 @@ class ArgoCdSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("argocd_list_apps", {}, invoke, used),
             _safe_call("argocd_get_app", {"name": "payment-api"}, invoke, used),
@@ -407,8 +447,10 @@ class JiraSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "jira_search_issues",
@@ -441,8 +483,10 @@ class SlackSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "slack_search_messages",
@@ -475,8 +519,10 @@ class BitbucketSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("bb_list_recent_commits", {"repo": "payments/payment-api", "max_results": 10}, invoke, used),
             _safe_call("bb_list_open_pull_requests", {"repo": "payments/payment-api"}, invoke, used),
@@ -505,8 +551,10 @@ class BackstageSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("backstage_get_entity", {"kind": "Component", "name": "payment-api"}, invoke, used),
         ]
