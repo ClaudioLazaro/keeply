@@ -242,3 +242,49 @@ describe("AgentSettingsTab", () => {
     ).toBeInTheDocument();
   });
 });
+
+/**
+ * Accessibility of the surface where the agent is configured.
+ *
+ * Found by auditing against the UI/UX rule set: the captions were visible
+ * but attached to nothing, selection was carried by an emerald tint alone,
+ * and the result of saving was never announced. All three are invisible to
+ * sighted mouse users and blocking for everyone else.
+ */
+describe("AgentSettingsTab accessibility", () => {
+  it("associates every caption with its control", () => {
+    mockSwr(CONFIG);
+    render(<AgentSettingsTab />);
+
+    // getByLabelText only resolves through a real label association, so this
+    // fails if the caption goes back to being a detached sibling.
+    expect(screen.getByLabelText("Model")).toBeInTheDocument();
+    expect(screen.getByLabelText("Provider")).toBeInTheDocument();
+  });
+
+  it("exposes severity selection as pressed state, not only as colour", () => {
+    mockSwr(CONFIG);
+    render(<AgentSettingsTab />);
+
+    const critical = screen.getByRole("button", { name: /critical/i });
+    expect(critical).toHaveAttribute("aria-pressed");
+  });
+
+  it("announces a failed save instead of only colouring it red", async () => {
+    mockSwr(CONFIG);
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: "boom" }),
+      text: async () => "boom",
+    });
+
+    render(<AgentSettingsTab />);
+    // Save stays disabled until something changes, so dirty the form first.
+    fireEvent.click(screen.getByRole("button", { name: /critical/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/could not save/i);
+  });
+});
