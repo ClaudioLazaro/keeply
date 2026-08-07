@@ -123,3 +123,16 @@ jest.mock("react-icons/tb", () => ({
 jest.mock("@/features/presets/presets-manager/ui/alerts-rules-builder", () => ({
   AlertsRulesBuilder: () => React.createElement('div', { 'data-testid': 'alerts-rules-builder' }),
 }));
+
+// jsdom omits TextEncoder/TextDecoder, which Node has had as globals since
+// v11 and which server-side code legitimately uses (e.g. computing a byte
+// length for Content-Length). Without this, code that is correct in the
+// Next.js Node runtime fails only under test.
+import { TextDecoder, TextEncoder } from "util";
+
+if (typeof globalThis.TextEncoder === "undefined") {
+  globalThis.TextEncoder = TextEncoder as typeof globalThis.TextEncoder;
+}
+if (typeof globalThis.TextDecoder === "undefined") {
+  globalThis.TextDecoder = TextDecoder as typeof globalThis.TextDecoder;
+}

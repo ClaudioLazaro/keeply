@@ -61,10 +61,20 @@ export function openAiCompatFetch(
   baseFetch: typeof fetch = fetch
 ): typeof fetch {
   return async (input, init) => {
-    if (init?.method?.toUpperCase() === "POST" && typeof init.body === "string") {
-      return baseFetch(input, { ...init, body: rewriteRoles(init.body) });
+    if (init?.method?.toUpperCase() !== "POST" || typeof init.body !== "string") {
+      return baseFetch(input, init);
     }
-    return baseFetch(input, init);
+    const body = rewriteRoles(init.body);
+    if (body === init.body) return baseFetch(input, init);
+
+    // The rewrite shortens the body ("developer" -> "system"), and the OpenAI
+    // SDK sets Content-Length explicitly. Leaving the old value stranded the
+    // request with UND_ERR_REQ_CONTENT_LENGTH_MISMATCH — the button called the
+    // endpoint and still produced nothing, just one layer further in.
+    // Byte length, not character count: content may be non-ASCII.
+    const headers = new Headers(init.headers as HeadersInit | undefined);
+    headers.set("content-length", String(new TextEncoder().encode(body).length));
+    return baseFetch(input, { ...init, body, headers });
   };
 }
 
