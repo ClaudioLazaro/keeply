@@ -9,6 +9,7 @@ import {
   getAiProvider,
   type ResolvedAiProvider,
 } from "@/shared/lib/server/getAiProvider";
+import { openAiCompatFetch } from "@/shared/lib/server/openAiCompatFetch";
 
 export const POST = async (req: NextRequest) => {
   // Credentials come from the AI provider installed in Keep, falling back
@@ -31,7 +32,16 @@ export const POST = async (req: NextRequest) => {
       const openai = new OpenAI({
         organization: process.env.OPEN_AI_ORGANIZATION_ID,
         apiKey: resolved.apiKey,
-        ...(resolved.baseURL ? { baseURL: resolved.baseURL } : {}),
+        ...(resolved.baseURL
+          ? {
+              baseURL: resolved.baseURL,
+              // CopilotKit's OpenAIAdapter rewrites `system` to OpenAI's
+              // `developer` role with no way to opt out. Providers that only
+              // speak the OpenAI format reject it outright, which is why AI
+              // Summary silently produced nothing against DeepSeek.
+              fetch: openAiCompatFetch(),
+            }
+          : {}),
       });
       const serviceAdapter = new OpenAIAdapter({
         openai,
