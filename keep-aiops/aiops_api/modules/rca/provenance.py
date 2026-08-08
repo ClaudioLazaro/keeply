@@ -141,14 +141,62 @@ def annotate_hypotheses(
 
     for hypothesis in hypotheses:
         supporting = list(hypothesis.get("supporting_evidence") or [])
-        corroborated = any(eid in live_ids for eid in supporting)
-        hypothesis["corroborated"] = corroborated
-        if not corroborated:
+        live = sum(1 for eid in supporting if eid in live_ids)
+        share = live / len(supporting) if supporting else 0.0
+
+        hypothesis["corroborated"] = live > 0
+        hypothesis["live_support"] = live
+        hypothesis["support_count"] = len(supporting)
+        hypothesis["corroboration"] = round(share, 2)
+
+        # Scaled by how much of the support is real, not by whether ANY of it
+        # is. The previous rule was `any(live)`, so one live item among four
+        # conferred full confidence — a hypothesis resting 25% on reality was
+        # presented exactly like one resting entirely on it. Technically true,
+        # materially misleading, and in the one number an operator reads to
+        # decide whether to act.
+        #
+        # Monotonic and bounded: share=0 keeps the old 0.4 floor, share=1
+        # leaves confidence untouched. Confidence is only ever reduced.
+        factor = UNCORROBORATED_CONFIDENCE_FACTOR + (
+            1 - UNCORROBORATED_CONFIDENCE_FACTOR
+        ) * share
+        if factor < 1.0:
             hypothesis["confidence"] = round(
-                float(hypothesis.get("confidence", 0.0)) * UNCORROBORATED_CONFIDENCE_FACTOR, 2
+                float(hypothesis.get("confidence", 0.0)) * factor, 2
             )
+        if live == 0:
             hypothesis["caveat"] = _caveat_for(supporting, backends)
+        elif share < 1.0:
+            hypothesis["caveat"] = (
+                f"partly unverified — {live} of {len(supporting)} supporting "
+                "items are live"
+            )
     return hypotheses
+
+
+# An analysis with no live evidence anywhere cannot separate one cause from
+# another: it is ranking stories, not findings.
+def is_conclusive(evidence: list[Any]) -> bool:
+    """Whether the evidence base can support ranking causes at all.
+
+    The system previously always answered. Given sixteen demo payloads and
+    two real ones it still produced five ranked hypotheses with confidence
+    scores, and a ranked list reads as an assessment however it is labelled —
+    a number anchors an operator even when the caveat beside it does not.
+
+    Declining is itself a finding, and a more useful one than a confident
+    guess during an incident.
+    """
+    return tally(evidence).get(LIVE, 0) > 0
+
+
+INCONCLUSIVE_NOTICE = (
+    "**Inconclusive: no live evidence was collected.** The hypotheses below "
+    "are patterns matched against demo or missing data, not findings about "
+    "your systems. Treat them as questions to investigate, never as an "
+    "assessment."
+)
 
 
 def _caveat_for(supporting: list[str], backends: dict[str, str]) -> str:

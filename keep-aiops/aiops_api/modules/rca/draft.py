@@ -147,13 +147,25 @@ def render_draft(
     and it produced a draft headed "AI-assisted" — so a template's ranking
     was read as a model's reasoning. The header now says which one wrote it.
     """
-    from aiops_api.modules.rca.provenance import describe
+    from aiops_api.modules.rca.provenance import (
+        INCONCLUSIVE_NOTICE,
+        describe,
+        is_conclusive,
+    )
 
     lines = [
         "**RCA draft (AI-assisted)**"
         if ai_assisted
         else "**RCA draft (deterministic — no model was used)**",
         "",
+    ]
+    # Before the summary, not after it. A reader who stops at the first
+    # paragraph must not leave with an assessment the evidence cannot support;
+    # a caveat further down is read, if at all, after the conclusion has
+    # already landed.
+    if not is_conclusive(evidence):
+        lines += [INCONCLUSIVE_NOTICE, ""]
+    lines += [
         "## Summary",
         summary or default_summary(incident, evidence, knowledge),
         "",
