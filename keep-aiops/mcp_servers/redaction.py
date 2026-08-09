@@ -63,8 +63,12 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
         # password=..., api_key: "...", token => ... — the identifier is what
         # makes this safe to match; the value alone would be guesswork.
         re.compile(
-            r"(?i)\b(pass(?:word|wd)?|secret|api[_-]?key|apikey|access[_-]?token"
-            r"|auth[_-]?token|client[_-]?secret|private[_-]?key)"
+            # Bare `token` matters most and was missing: it is the commonest
+            # form by far, and the suite passed because the tests only covered
+            # the variants that had been written.
+            r"(?i)\b(pass(?:word|wd)?|passphrase|secret|token|api[_-]?key|apikey"
+            r"|access[_-]?token|auth[_-]?token|client[_-]?secret|private[_-]?key"
+            r"|credential)"
             r"(\s*[:=]{1,2}>?\s*)"
             r"([\"']?)([^\s\"',;}{]{6,})\3"
         ),

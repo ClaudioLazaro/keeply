@@ -20,6 +20,12 @@ from mcp_servers.redaction import redact, redact_lines
         ("conn=postgres://app:hunter2secret@db:5432/prod", "url-credentials"),
         ('api_key: "tok_live_9f8e7d6c5b4a"', "assigned-secret"),
         ("password=correcthorsebattery", "assigned-secret"),
+        # Bare `token` is the commonest form and was missed for exactly the
+        # reason this list exists: the tests only covered what was written.
+        ("token=abc123secretvalue", "assigned-secret"),
+        ('TOKEN: "ghp_9f8e7d6c5b4a3210"', "assigned-secret"),
+        ("passphrase=hunter2horsebattery", "assigned-secret"),
+        ("credential = s3cr3tvalue", "assigned-secret"),
     ],
 )
 def test_credential_shapes_are_removed(text, label):
@@ -49,6 +55,10 @@ def test_removal_is_marked_so_the_reader_knows_something_stood_there():
         "Readiness probe failed: Get http://10.244.1.37:8080/healthz",
         "trace_id=4bf92f3577b34da6a3ce929d0e0e4736 span_id=00f067aa0ba902b7",
         "duration=1523ms status=503 upstream=identity-svc",
+        # `token` as part of a name, not an assignment — a looser pattern
+        # would delete the service that failed.
+        "upstream timeout after 3000ms calling token-store",
+        "tokens_used=1523 prompt_tokens=980",
     ],
 )
 def test_diagnostic_lines_are_left_alone(line):
