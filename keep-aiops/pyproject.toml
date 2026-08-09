@@ -39,7 +39,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["aiops_api", "mcp_gateway", "packages/keep_client"]
+packages = ["aiops_api", "mcp_gateway", "mcp_servers", "packages/keep_client"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
