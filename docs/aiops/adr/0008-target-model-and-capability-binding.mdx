@@ -1,0 +1,90 @@
+---
+title: "ADR-0008: Modelo de Alvo e Vínculo de Capacidade"
+description: "Onde vivem credencial, alvo e associação — e por que a capacidade é uma junção, não um registro."
+---
+
+| Campo | Valor |
+|-------|-------|
+| **ADR** | 0008 |
+| **Status** | Proposto |
+| **Data** | 2026-08-09 |
+| **Relacionados** | [ADR-0002](/aiops/adr/0002-mcp-as-tool-bus) · [RFC-0002](/aiops/rfc/0002-keeply-v2-rebuild) · [Estratégia](/aiops/roadmap/gap-closure) |
+
+## Contexto
+
+Uma investigação precisa saber **onde** olhar. Hoje isso está espalhado em três
+lugares que não concordam:
+
+- `MCP_K8S_CLUSTERS`, um registro de clusters em variável de ambiente do
+  servidor MCP;
+- os **providers do Keep**, que já guardam `api_server`, `token`, `insecure` e
+  `use_in_cluster_config` — com UI de instalação, secret manager e validação
+  de escopo;
+- o `AgentConfig`, que não guarda alvo nenhum.
+
+O primeiro é um **armazém paralelo de credenciais**, exatamente o que o commit
+`17107c29` removeu com a justificativa de que os providers do Keep são o
+sistema de registro. Foi reintroduzido por engano ao construir o servidor MCP
+de Kubernetes.
+
+E o ambiente real de produção é **multi-conta e multi-região** em AWS, com
+EKS, RDS, SQS e SNS. Um alvo não é um nome; é uma tupla.
+
+## Decisão
+
+**Um sistema de registro por tipo de fato. Todo o resto deriva.**
+
+| fato | dono | por quê |
+|---|---|---|
+| Credencial e alvo | **Providers do Keep** | 120+ providers, UI de install, secret manager, rotação, validação de escopo. É o maior ativo existente. |
+| Topologia de federação | **ContextForge** | já tem registro, UI e API — e é configuração de deploy, não de operação |
+| Composição e limites | **AgentConfig** | é o único que não existe, e o único para o qual vale construir tela |
+
+### Capacidade é junção, não registro
+
+Uma capacidade — *"Kubernetes em prod-eu"* — é o cruzamento de uma família de
+tools com uma instância de provider. **É computada, não guardada.**
+
+Guarda-se apenas o que não dá para derivar: quais capacidades o agente usa, e
+os limites de cada uma (budget, escopo, redação).
+
+Se capacidade virar tabela, a mesma coisa é cadastrada duas vezes e as duas
+divergem — que é como o `MCP_K8S_CLUSTERS` nasceu.
+
+### O alvo é uma tupla
+
+```
+target = (provider_id, região?, recurso?)
+```
+
+`provider_id` é a chave: `InstalledProvider` já tem `id` e `type`, então duas
+contas AWS são dois providers endereçáveis individualmente. O
+`PROVIDER_TYPE_TO_INTEGRATION` atual mapeia **tipo → integração**, o que sabe
+dizer "existe Datadog" mas não "use *este* Datadog". Essa é a lacuna.
+
+### Servidores MCP não guardam alvo
+
+Recebem qual alvo consultar, do control plane, que leu do Keep. O
+`MCP_K8S_CLUSTERS` sai, e com ele os `fields` vestigiais do `catalog.py`, que
+declaram configuração secreta consumida em lugar nenhum.
+
+## Alternativa considerada e recusada
+
+**Alvo na registração do ContextForge** — cada cluster vira uma entrada
+separada, com a credencial na própria registração (`authToken`,
+`passthroughHeaders`). Elegante: o endpoint *é* o cluster, e o bug de alvo
+implícito deixa de ser expressável.
+
+Recusada por ora porque a credencial passaria a trafegar pelo ContextForge, que
+audita e loga, e porque N contas × M regiões vira uma explosão de registrações
+mantidas à mão. Revisitar se a seleção por tupla se mostrar frágil.
+
+## Consequências
+
+- O `MCP_K8S_CLUSTERS` é dívida com prazo: sai quando o servidor de Kubernetes
+  resolver alvo via provider.
+- Instalar um provider passa a ser o ato que cria uma capacidade — não há
+  segundo cadastro para esquecer.
+- A UI de configuração fica pequena, porque quase tudo deriva.
+- Um provider desinstalado no Keep degrada a capacidade para `gap` honesto,
+  não para erro de configuração.

@@ -106,7 +106,9 @@
             "aiops/adr/0004-domain-event-bridge",
             "aiops/adr/0005-external-knowledge-engine",
             "aiops/adr/0006-modular-monolith-ai-plane",
-            "aiops/adr/0007-agent-framework-stack"
+            "aiops/adr/0007-agent-framework-stack",
+            "aiops/adr/0008-target-model-and-capability-binding",
+            "aiops/adr/0009-adaptive-gathering-plan"
           ]
         },
         {

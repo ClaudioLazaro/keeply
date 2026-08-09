@@ -1,0 +1,99 @@
+---
+title: "ADR-0009: Plano de Coleta Adaptativo"
+description: "Coletar evidência seguindo o que o incidente revela, e por que cada ramificação precisa registrar sua razão."
+---
+
+| Campo | Valor |
+|-------|-------|
+| **ADR** | 0009 |
+| **Status** | Proposto |
+| **Data** | 2026-08-09 |
+| **Relacionados** | [ADR-0008](/aiops/adr/0008-target-model-and-capability-binding) · [Estratégia](/aiops/roadmap/gap-closure) |
+
+## Contexto
+
+O coordinator roda **todos** os especialistas aplicáveis, em sequência, com os
+mesmos argumentos, sempre. Isso funciona com três tools de stub. Com as dez
+fontes reais do ambiente — Datadog, EKS, RDS, SQS, SNS, ArgoCD, Jira,
+Bitbucket, Backstage, Kubernetes — quebra em três frentes ao mesmo tempo:
+
+- **Custo.** Dez fontes × latência real estoura os 120s de wall budget antes
+  de chegar ao RCA.
+- **Ruído.** Puxar Jira e Bitbucket para uma saturação de RDS enche a
+  evidência de irrelevância — e agora que o detalhe chega ao prompt, ruído
+  compete com sinal pelo orçamento de contexto.
+- **Sequência perdida.** A ordem carrega informação. ArgoCD dizendo que houve
+  deploy há oito minutos **muda quais** logs vale ler. Nada disso se propaga
+  entre especialistas hoje.
+
+## Decisão
+
+Substituir a varredura de roster por um **plano adaptativo**: começar pelo que
+localiza, deixar cada resultado apontar o próximo passo, parar quando a
+hipótese se sustentar.
+
+A ordem não é arbitrária — cai fora dos papéis das fontes:
+
+```
+1. âncora      o monitor do Datadog que disparou → serviço, env, tags, janela
+2. localizar   tags/Backstage → conta, região, cluster, dono
+3. trace       APM → qual hop falhou, trace_id
+4. estreitar   logs daquele trace + estado k8s daquele workload
+5. mudança     houve deploy na janela? ArgoCD + Bitbucket
+6. dependência RDS/SQS/SNS do que o trace tocou
+7. contexto    Jira: mudança planejada ou incidente conhecido
+```
+
+O passo 3 elimina o passo 4 cego: hoje o especialista lê o log do pod que
+*parece* pior; ali lê o log da chamada que *de fato* falhou.
+
+O `find_workload` já é a versão embrionária disso — uma chamada cujo resultado
+aponta as seguintes. A diferença é que ele é o único.
+
+### O contrato: o plano é evidência
+
+**Cada ramificação registra sua razão**, persistida como evidência junto com o
+resto:
+
+```
+"consultei ArgoCD porque o trace mostrou 5xx começando 14:32
+ e há um deploy de payment-api na janela"
+```
+
+Isto não é telemetria — é requisito. O custo real do adaptativo é
+não-determinismo: duas execuções do mesmo incidente podem coletar coisas
+diferentes. Para um sistema cuja disciplina inteira é auditabilidade, isso é
+caro. A razão registrada é o que torna o não-determinismo **auditável em vez
+de misterioso**, exatamente como o `matched_by` do `find_workload` e o
+`caveat` das hipóteses.
+
+Sem esse registro, adaptativo vira caixa-preta — e aí perde-se justamente o
+que este produto passou meses construindo.
+
+### O plano e a UI dele nascem juntos
+
+Não em sequência. Se o plano vier primeiro sem visualização, entregamos
+não-determinismo sem a compensação que o torna aceitável. A UI é onde o
+operador lê **por que** a investigação foi por ali.
+
+## Alternativas consideradas
+
+| opção | por que não |
+|---|---|
+| Roster fixo em paralelo | determinístico e simples, mas paga custo e ruído de todas as fontes sempre |
+| Roteamento por tipo de incidente | determinístico e auditável, mas exige manter regras que envelhecem com o ambiente |
+
+O adaptativo foi escolhido sabendo que troca determinismo por relevância. A
+troca só é aceitável com a razão registrada.
+
+## Consequências
+
+- O `Scope` precisa generalizar além de namespace. Datadog escopa por
+  `serviço + env + janela`; se o `Scope` não servir, foi escrito "namespace"
+  com nome genérico.
+- Budget passa a ser gasto de forma desigual entre investigações, e o teto por
+  investigação deixa de prever custo — daí a necessidade do custo em dinheiro.
+- Um passo que falha não aborta o plano: vira `gap` e o plano segue por outro
+  ramo, registrando que seguiu.
+- Só faz sentido construir depois de duas ou três fontes reais. Planejar coleta
+  com uma fonte é planejar nada.
