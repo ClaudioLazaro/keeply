@@ -35,6 +35,13 @@ from aiops_api.modules.specialists.base import (
     SpecialistResult,
     ToolCall,
 )
+from aiops_api.modules.specialists.plan import (
+    Plan,
+    absorb,
+    order_specialists,
+    should_enter,
+    stage_of,
+)
 from aiops_api.modules.specialists.registry import default_specialists
 from aiops_api.modules.specialists.tracker import BudgetTracker
 from aiops_api.telemetry import investigation_span
@@ -209,7 +216,7 @@ def run_specialists(
     scope: Scope | None = None,
     specialists: tuple[Any, ...] | None = None,
     client_factory: Callable[[], Any] | None = None,
-) -> tuple[list[Evidence], list[SpecialistResult], BudgetTracker]:
+) -> tuple[list[Evidence], list[SpecialistResult], BudgetTracker, Plan]:
     """Run every applicable specialist under a single budget.
 
     Returns the evidence rows to persist, the per-specialist results (for
@@ -249,6 +256,12 @@ def run_specialists(
         client_factory=client_factory,
     ) as (catalog, invoke):
         applicable = [spec for spec in specialists if any(t in catalog for t in spec.tools)]
+        # Ordered by what narrows the next stage rather than by registry order
+        # (ADR-0009). With three stub tools this is the same list; with ten
+        # real sources it is the difference between following the incident and
+        # sweeping everything.
+        applicable = order_specialists(tuple(applicable))
+        plan = Plan()
         if not applicable:
             logger.warning(
                 "no specialists match the live MCP catalog",
@@ -256,6 +269,23 @@ def run_specialists(
             )
 
         for specialist in applicable:
+            stage = stage_of(specialist.name)
+            enter, why = should_enter(
+                stage, plan,
+                budget_used=tracker.snapshot().get("tool_calls", 0),
+                budget_limit=budget.tool_calls,
+            )
+            if not enter:
+                # Recorded, not silent. A source that was skipped is a hole in
+                # the evidence, and the operator has to be able to see it and
+                # the reason for it.
+                plan.record(stage, specialist.name, taken=False, reason=why)
+                logger.info("plan skipped specialist", extra={
+                    "investigation_id": investigation_id,
+                    "specialist": specialist.name, "reason": why,
+                })
+                continue
+            plan.record(stage, specialist.name, taken=True, reason=why)
             with investigation_span(
                 investigation_id,
                 name=f"specialist.{specialist.name}",
@@ -300,5 +330,7 @@ def run_specialists(
                     ).inc()
                     if call.is_gap:
                         metrics.evidence_gaps.labels(tool=call.tool).inc()
+                absorb(plan, specialist.name, result)
                 results.append(result)
-    return evidence, results, tracker
+
+    return evidence, results, tracker, plan

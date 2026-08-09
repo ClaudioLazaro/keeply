@@ -67,7 +67,7 @@ def test_coordinator_persists_evidence_per_specialist(monkeypatch):
         lambda timeout: client,
     )
 
-    evidence, results, tracker = run_specialists(
+    evidence, results, tracker, _plan = run_specialists(
         investigation_id="inv-1",
         tenant_id="tenant-1",
         gateway_url="http://mcp",
@@ -127,7 +127,7 @@ def test_coordinator_swallows_specialist_crash(monkeypatch):
         def gather(self, *, catalog, invoke, budget, used, scope):
             raise ValueError("specialist impl bug")
 
-    evidence, results, _ = run_specialists(
+    evidence, results, _, _plan = run_specialists(
         investigation_id="inv-3",
         tenant_id="tenant-1",
         gateway_url="http://mcp",

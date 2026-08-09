@@ -338,13 +338,31 @@ def _gather_phase(
     scope = from_context_pack(
         investigation.context_pack, cluster=settings.mcp_default_cluster
     )
-    evidence, _results, tracker = run_specialists(
+    evidence, _results, tracker, plan = run_specialists(
         investigation_id=investigation.id,
         tenant_id=investigation.tenant_id,
         gateway_url=settings.mcp_gateway_url,
         budget=budget,
         scope=scope,
     )
+    # Stored beside the context pack rather than among the evidence: it
+    # records what we decided, not what any system reported, and counting it
+    # as evidence would put a row of "unknown provenance" into the tally the
+    # whole product is judged by.
+    if plan.steps and isinstance(investigation.context_pack, dict):
+        investigation.context_pack = {
+            **investigation.context_pack,
+            "gathering_plan": {
+                "narrative": plan.narrative(),
+                "stages_entered": plan.stages_entered,
+                "steps": [
+                    {"stage": s.stage.value, "specialist": s.specialist,
+                     "taken": s.taken, "reason": s.reason}
+                    for s in plan.steps
+                ],
+                "facts": plan.facts,
+            },
+        }
     return evidence, tracker
 
 

@@ -116,6 +116,15 @@ _session_query = query
 
 
 def query_knowledge(tenant_id: str, query: str, k: int = 5) -> list[dict[str, Any]]:
-    """In-process entry point for the orchestrator (opens its own session)."""
+    """In-process entry point for the orchestrator (opens its own session).
+
+    Retrieval is re-ranked by how earlier analyses citing each document were
+    rated. Applied here rather than inside the scorers so both keyword and
+    embedding modes get it, and so the relevance match stays the primary
+    signal — feedback only breaks ties.
+    """
+    from aiops_api.modules.knowledge import feedback_signal
+
     with session_scope() as session:
-        return _session_query(session, tenant_id, query, k)
+        results = _session_query(session, tenant_id, query, k)
+    return feedback_signal.apply(tenant_id, results)
