@@ -5,6 +5,10 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY aiops_api ./aiops_api
 COPY mcp_gateway ./mcp_gateway
+# The MCP servers and the redaction they apply before evidence leaves the
+# process. Absent from the image, the k8s server and redaction simply were not
+# there — while the tests, which run from the source tree, stayed green.
+COPY mcp_servers ./mcp_servers
 COPY packages ./packages
 # Migrations (aiops-migrate service runs `alembic -c alembic.ini upgrade head`)
 COPY alembic.ini ./alembic.ini
