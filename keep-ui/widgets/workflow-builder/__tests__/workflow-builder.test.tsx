@@ -211,7 +211,7 @@ const mockConfig: InternalConfig = {
     "timeline",
     "relatedServices",
   ],
-};
+} as unknown as InternalConfig;
 
 jest.mock("@/utils/hooks/useConfig", () => ({
   useConfig: () => ({

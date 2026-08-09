@@ -4,8 +4,8 @@
  */
 
 describe("Preset Navigation Logic", () => {
-  let mockRouter: { push: jest.fn };
-  let mockMutatePresets: jest.fn;
+  let mockRouter: { push: jest.Mock };
+  let mockMutatePresets: jest.Mock;
   let originalWindowLocation: Location;
 
   beforeEach(() => {
@@ -19,7 +19,7 @@ describe("Preset Navigation Logic", () => {
   });
 
   afterEach(() => {
-    window.location = originalWindowLocation;
+    window.location = originalWindowLocation as any;
     jest.clearAllMocks();
   });
 
