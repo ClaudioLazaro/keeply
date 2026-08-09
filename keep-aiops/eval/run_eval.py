@@ -175,6 +175,23 @@ class RubricScore:
         return self.total >= USEFUL_MIN_SCORE
 
 
+SUMMARY_SECTION_RE = re.compile(
+    r"^##\s*Summary\s*$(?P<body>.*?)(?=^##\s|\Z)", re.MULTILINE | re.DOTALL
+)
+
+
+def summary_section(draft: str) -> str:
+    """The part of the draft the writer produced, not the part we rendered.
+
+    Everything else — the evidence listing, the references, the disclaimer —
+    is template output and would score the same however uninformed the writer
+    was.
+    """
+    match = SUMMARY_SECTION_RE.search(draft)
+    return match.group("body").strip() if match else ""
+
+
+
 def score_draft(fixture: dict[str, Any], draft: str, citations: dict[str, Any] | None = None) -> RubricScore:
     """Score one RCA draft against the transparent AC4 rubric."""
     markers = CITATION_MARKER_RE.findall(draft)
@@ -188,7 +205,14 @@ def score_draft(fixture: dict[str, Any], draft: str, citations: dict[str, Any] |
             # Stricter: at least one marker must resolve to a real evidence id.
             has_evidence_ref = any(marker.strip("[]") in known for marker in evidence_markers)
 
-    lowered = draft.lower()
+    # Scored on the model's own prose, not on the whole document.
+    #
+    # The draft renders an Evidence section verbatim, so the expected keywords
+    # appear there whatever the prompt carried — which made this check pass
+    # identically with and without the evidence detail the model was supposed
+    # to reason from. It measured the renderer, not the writer.
+    scored_region = summary_section(draft) or draft
+    lowered = scored_region.lower()
     matched_keywords = [kw for kw in fixture.get("expected_keywords", []) if kw.lower() in lowered]
 
     disclaimer_found = bool(DISCLAIMER_RE.search(draft))
@@ -212,47 +236,23 @@ def score_draft(fixture: dict[str, Any], draft: str, citations: dict[str, Any] |
 
 
 def summarize_evidence(tool: str, payload: dict[str, Any]) -> str:
-    """Signal-rich one-line summary for an evidence record.
+    """The summary the coordinator would have written for this record.
 
-    The draft's Evidence section quotes summaries verbatim, so the summary
-    surfaces the payload's key signals (reason names, messages, first log
-    lines) instead of M1's terse "N items returned".
+    This used to build a deliberately signal-rich line, folding the payload's
+    reasons and messages into the summary so the deterministic writer — which
+    reads summaries — had something to work with.
+
+    That made the golden set easier than production, where the coordinator
+    writes "get_events: 13 events returned" and the substance stays in the
+    payload. The gap is not academic: it is exactly why removing the evidence
+    detail from the LLM prompt changed nothing here. The fixture already
+    carried the findings in a field the prompt always sends.
+
+    Delegating to the production summariser means the two cannot drift again.
     """
-    if tool == "get_pods":
-        pods = payload.get("pods") or []
-        bits = []
-        for pod in pods:
-            state = pod.get("state") or {}
-            waiting = (state.get("waiting") or {}).get("reason")
-            running = "Running" if state.get("running") else None
-            terminated = (state.get("terminated") or {}).get("reason")
-            last = pod.get("last_terminated") or {}
-            bits.append(
-                f"{pod.get('name')} phase={pod.get('phase')} ready={pod.get('ready')} "
-                f"restarts={pod.get('restarts')} state={waiting or terminated or running or 'unknown'} "
-                f"last_terminated={last.get('reason')}({last.get('exit_code')})"
-            )
-        return f"get_pods: {'; '.join(bits)}" if bits else "get_pods: no pods"
-    if tool == "get_events":
-        events = payload.get("events") or []
-        bits = [f"{e.get('reason')}: {e.get('message')}" for e in events]
-        return f"get_events: {'; '.join(bits)}" if bits else "get_events: no events"
-    if tool == "get_logs":
-        lines = payload.get("lines") or []
-        if isinstance(payload.get("logs"), str):
-            lines = payload["logs"].splitlines()
-        head = " | ".join(str(line) for line in lines[:6])
-        return f"get_logs ({payload.get('pod', '?')}): {head}" if head else "get_logs: no lines"
-    if tool == "prom_alerts":
-        alerts = payload.get("alerts") or []
-        bits = [f"{a.get('name')}({a.get('severity')}): {a.get('summary')}" for a in alerts]
-        return f"prom_alerts: {'; '.join(bits)}" if bits else "prom_alerts: none firing"
-    if tool in ("prom_query", "prom_query_range"):
-        if "series" in payload:
-            series = ", ".join(f"{s.get('pod') or s.get('metric', '?')}={s.get('value')}" for s in payload["series"])
-            return f"prom_query: {payload.get('query')} => [{series}] {payload.get('unit', '')}"
-        return f"prom_query: {payload.get('query')} => {payload.get('value')} {payload.get('unit', '')}"
-    return f"{tool}: {json.dumps(payload, sort_keys=True)[:300]}"
+    from aiops_api.modules.specialists.coordinator import _summarize
+
+    return _summarize(tool, payload)
 
 
 @dataclass
@@ -261,10 +261,27 @@ class FixtureResult:
     draft: str
     rubric: RubricScore
     retrieved_ids: list[str]
+    # On the LLM path, a summary that reflects none of the evidence is not a
+    # weak result — it is a writer that did not read. Scored as a veto rather
+    # than as one point of four, because losing one point still cleared the
+    # bar and the run stayed green while the model was being handed counts.
+    requires_grounded_summary: bool = False
+
+    @property
+    def useful(self) -> bool:
+        if self.requires_grounded_summary and not self.rubric.has_keyword:
+            return False
+        return self.rubric.useful
 
 
-def run_fixture(fixture: dict[str, Any], contracts: Contracts) -> FixtureResult:
-    """Run the deterministic pipeline for one fixture and score the draft."""
+def run_fixture(
+    fixture: dict[str, Any], contracts: Contracts, llm_path: bool = False
+) -> FixtureResult:
+    """Run one fixture through the pipeline and score the draft.
+
+    ``llm_path`` selects the path production runs — same rubric, so the two
+    scores are directly comparable and a regression in either is visible.
+    """
     Evidence, keyword_retrieve, deterministic_rca = contracts
 
     evidence = [
@@ -273,7 +290,13 @@ def run_fixture(fixture: dict[str, Any], contracts: Contracts) -> FixtureResult:
             investigation_id=f"eval-{fixture['id']}",
             tool=item["tool"],
             summary=summarize_evidence(item["tool"], item["payload"]),
-            payload=item["payload"],
+            # The coordinator wraps every tool result as
+            # {"arguments": ..., "result": ..., "audit_id": ...}, and the
+            # prompt's evidence renderer reads `result`. Storing the bare
+            # payload here meant the renderer found nothing to show and the
+            # model was handed counts — the very defect this path exists to
+            # catch, hidden by the fixture not matching production.
+            payload={"arguments": {}, "result": item["payload"]},
         )
         for index, item in enumerate(fixture["stub_evidence"])
     ]
@@ -290,11 +313,17 @@ def run_fixture(fixture: dict[str, Any], contracts: Contracts) -> FixtureResult:
     query = f"{incident.get('name', '')} {incident.get('service', '')} {fixture.get('description', '')}"
     retrieved = keyword_retrieve(query, docs, k=min(5, len(docs)))
 
-    result = deterministic_rca(incident, evidence, retrieved)
-    draft = result["draft"]
-    citations = result.get("citations")
+    if llm_path:
+        draft, _hypotheses, citations = _generate_via_llm_path(
+            fixture, incident, evidence, retrieved
+        )
+    else:
+        result = deterministic_rca(incident, evidence, retrieved)
+        draft = result["draft"]
+        citations = result.get("citations")
 
     return FixtureResult(
+        requires_grounded_summary=llm_path,
         fixture=fixture,
         draft=draft,
         rubric=score_draft(fixture, draft, citations),
@@ -326,7 +355,7 @@ def print_report(results: list[FixtureResult], verbose: bool = False) -> float:
     useful_count = 0
     for result in results:
         rubric = result.rubric
-        useful_count += int(rubric.useful)
+        useful_count += int(result.useful)
         citations = f"{_ok(rubric.has_min_citations)} ({rubric.citation_count} markers)"
         keywords = f"{_ok(rubric.has_keyword)} ({', '.join(rubric.matched_keywords) or 'none'})"
         if rubric.has_disclaimer_no_mutate:
@@ -336,7 +365,7 @@ def print_report(results: list[FixtureResult], verbose: bool = False) -> float:
         else:
             clean = f"FAIL (mutate: {', '.join(rubric.mutate_claims)})"
         print(
-            f"{result.fixture['id']:<22} {rubric.total}/4  {'YES' if rubric.useful else 'no':>6}  "
+            f"{result.fixture['id']:<22} {rubric.total}/4  {'YES' if result.useful else 'no':>6}  "
             f"{citations:<18} {_ok(rubric.has_evidence_ref):<9} {keywords:<24} {clean}"
         )
     ratio = useful_count / len(results)
@@ -352,17 +381,70 @@ def print_report(results: list[FixtureResult], verbose: bool = False) -> float:
     return ratio
 
 
+
+def _generate_via_llm_path(fixture, incident, evidence, retrieved):
+    """Score the path that actually ships.
+
+    Runs the real ``generate_rca`` — prompt assembly, response parsing,
+    citation normalisation, provenance annotation, draft rendering — with only
+    the network replaced. Scoring the deterministic fallback measured a writer
+    that production does not use, which is how a starved prompt kept a green
+    gate.
+    """
+    from eval.fake_llm import installed
+
+    class _Investigation:
+        """The handful of attributes generate_rca reads off the row."""
+
+        def __init__(self, fixture_id: str) -> None:
+            self.id = f"eval-{fixture_id}"
+            self.tenant_id = "*"
+            self.incident_id = str(incident.get("id") or fixture_id)
+
+    from aiops_api.modules.rca import generate_rca
+    from aiops_api.settings import Settings
+
+    # A model name is what switches the engine onto the LLM branch; the fake
+    # answers regardless of which one.
+    settings = Settings(llm_model="eval/fake", llm_api_key="not-used")
+    with installed():
+        return generate_rca(
+            _Investigation(fixture["id"]),
+            evidence,
+            {"incident": incident},
+            retrieved,
+            settings=settings,
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="AC4 golden-set eval harness (deterministic, in-process)")
     parser.add_argument("--golden-dir", type=Path, default=GOLDEN_SET_DIR, help="directory of fixture JSON files")
     parser.add_argument("--verbose", action="store_true", help="print full drafts after the report")
+    parser.add_argument(
+        "--path",
+        choices=("deterministic", "llm", "both"),
+        default="both",
+        help="which writer to score; 'llm' uses a fake completion so no network or key is needed",
+    )
     args = parser.parse_args(argv)
 
     contracts = load_contracts()
     fixtures = load_fixtures(args.golden_dir)
-    results = [run_fixture(fixture, contracts) for fixture in fixtures]
-    ratio = print_report(results, verbose=args.verbose)
-    return 0 if ratio >= USEFUL_RATIO_THRESHOLD else 1
+
+    paths = ("deterministic", "llm") if args.path == "both" else (args.path,)
+    worst = 1.0
+    for path in paths:
+        label = "deterministic fallback" if path == "deterministic" else "LLM path (production)"
+        print(f"\n=== {label} ===")
+        results = [
+            run_fixture(fixture, contracts, llm_path=(path == "llm"))
+            for fixture in fixtures
+        ]
+        worst = min(worst, print_report(results, verbose=args.verbose))
+    # Both must clear the bar: a green fallback has hidden a broken LLM path
+    # before, and that is the failure this flag exists to catch.
+    return 0 if worst >= USEFUL_RATIO_THRESHOLD else 1
 
 
 if __name__ == "__main__":
