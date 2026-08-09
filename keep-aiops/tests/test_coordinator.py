@@ -95,7 +95,7 @@ def test_coordinator_budget_breach_propagates(monkeypatch):
     class _LoopingJira(JiraSpecialist):
         """Override to call ``_safe_call`` 10x against a 3-call budget."""
 
-        def gather(self, *, catalog, invoke, budget, used):
+        def gather(self, *, catalog, invoke, budget, used, scope):
             calls = []
             for _ in range(10):
                 calls.append(
@@ -124,7 +124,7 @@ def test_coordinator_swallows_specialist_crash(monkeypatch):
     )
 
     class _Crashy(BackstageSpecialist):
-        def gather(self, *, catalog, invoke, budget, used):
+        def gather(self, *, catalog, invoke, budget, used, scope):
             raise ValueError("specialist impl bug")
 
     evidence, results, _ = run_specialists(

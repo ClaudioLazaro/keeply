@@ -103,14 +103,47 @@ def test_hypothesis_backed_only_by_stub_is_discounted_and_labelled():
     assert hypotheses[0]["caveat"] == "unverified — stub data only"
 
 
-def test_one_live_reference_is_enough_to_corroborate():
+def test_one_live_reference_corroborates_but_does_not_fully_confirm():
+    """Corroboration is binary; confidence is proportional.
+
+    One live item among several used to confer the undiscounted score, so a
+    hypothesis resting 25% on reality was presented exactly like one resting
+    entirely on it. Measured on a real investigation: confidence 0.60 shown
+    as corroborated, supported by 4 items of which 1 was live.
+    """
     evidence = [ev("e1", "stub"), ev("e2", "live")]
     hypotheses = [{"title": "OOM", "confidence": 0.7, "supporting_evidence": ["e1", "e2"]}]
 
     annotate_hypotheses(hypotheses, evidence)
 
     assert hypotheses[0]["corroborated"] is True
-    assert hypotheses[0]["confidence"] == 0.7
+    assert hypotheses[0]["corroboration"] == 0.5
+    # factor = 0.4 + 0.6 * 0.5 = 0.7  ->  0.7 * 0.7
+    assert hypotheses[0]["confidence"] == 0.49
+    assert "1 of 2" in hypotheses[0]["caveat"]
+
+
+def test_fully_live_support_is_not_discounted():
+    """The rule must not punish a hypothesis whose every citation is real."""
+    evidence = [ev("e1", "live"), ev("e2", "live")]
+    hypotheses = [{"title": "OOM", "confidence": 0.8, "supporting_evidence": ["e1", "e2"]}]
+
+    annotate_hypotheses(hypotheses, evidence)
+
+    assert hypotheses[0]["confidence"] == 0.8
+    assert hypotheses[0]["corroboration"] == 1.0
+    assert "caveat" not in hypotheses[0]
+
+
+def test_discount_grows_as_the_real_share_shrinks():
+    """Monotonic: less real support can never mean more confidence."""
+    evidence = [ev("e1", "live")] + [ev(f"s{i}", "stub") for i in range(3)]
+    scores = []
+    for live_refs in (["e1", "s0", "s1", "s2"], ["e1", "s0"], ["e1"]):
+        h = [{"title": "t", "confidence": 1.0, "supporting_evidence": live_refs}]
+        annotate_hypotheses(h, evidence)
+        scores.append(h[0]["confidence"])
+    assert scores == sorted(scores), f"confidence must rise with real share: {scores}"
 
 
 def test_confidence_is_never_inflated():
@@ -149,3 +182,56 @@ def test_draft_tags_stub_evidence_bullets_and_leaves_live_clean():
     )
     assert "(stub" not in live_line
     assert "_(stub — demo data)_" in stub_line
+
+
+# --------------------------------------------------------------------------- #
+# Abstention — declining is a finding
+# --------------------------------------------------------------------------- #
+
+
+def test_an_evidence_base_with_no_live_data_is_inconclusive():
+    """Ranking demo payloads is ranking stories, not findings."""
+    from aiops_api.modules.rca.provenance import is_conclusive
+
+    assert is_conclusive([ev("e1", "stub"), ev("e2", "gap")]) is False
+    assert is_conclusive([]) is False
+    assert is_conclusive([ev("e1", "stub"), ev("e2", "live")]) is True
+
+
+def test_the_draft_leads_with_the_inconclusive_notice():
+    """Before the summary, not after it.
+
+    A reader who stops at the first paragraph must not leave holding an
+    assessment the evidence cannot support. A caveat below the conclusion is
+    read, if at all, once the conclusion has already landed.
+    """
+    from aiops_api.modules.rca.draft import render_draft
+
+    draft = render_draft(
+        incident={"id": "inc-1", "tenant_id": "t"},
+        evidence=[ev("e1", "stub")],
+        knowledge=[],
+        summary="Something happened.",
+        hypotheses=[{"title": "OOM", "confidence": 0.9, "supporting_evidence": ["e1"]}],
+        citations={"evidence": {"E1": "e1"}, "knowledge": {}},
+        investigation_id="inv-1",
+        ai_assisted=True,
+    )
+    assert "Inconclusive" in draft
+    assert draft.index("Inconclusive") < draft.index("## Summary")
+
+
+def test_a_draft_with_live_evidence_carries_no_inconclusive_notice():
+    from aiops_api.modules.rca.draft import render_draft
+
+    draft = render_draft(
+        incident={"id": "inc-1", "tenant_id": "t"},
+        evidence=[ev("e1", "live")],
+        knowledge=[],
+        summary="Something happened.",
+        hypotheses=[{"title": "OOM", "confidence": 0.9, "supporting_evidence": ["e1"]}],
+        citations={"evidence": {"E1": "e1"}, "knowledge": {}},
+        investigation_id="inv-1",
+        ai_assisted=True,
+    )
+    assert "Inconclusive" not in draft

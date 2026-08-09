@@ -49,12 +49,18 @@ function Field({
   hint?: string;
   children: React.ReactNode;
 }) {
+  // The label wraps its control so the association is implicit. It used to sit
+  // beside it with no `htmlFor`, which reads to a screen reader as seven
+  // unlabelled inputs on the page where the agent is configured — the caption
+  // was visible but not attached to anything.
   return (
     <div className="mb-3">
-      <label className="block text-sm text-tremor-content-emphasis mb-1">
-        {label}
+      <label className="block">
+        <span className="block text-sm text-tremor-content-emphasis mb-1">
+          {label}
+        </span>
+        {children}
       </label>
-      {children}
       {hint && <p className="text-xs text-tremor-content mt-1">{hint}</p>}
     </div>
   );
@@ -131,6 +137,11 @@ export function AgentSettingsTab() {
 
       {feedback && (
         <Callout
+          // Announced, not just coloured: the outcome of saving is exactly
+          // the kind of thing a screen-reader user must not have to discover
+          // by re-reading the page.
+          role={feedback.ok ? "status" : "alert"}
+          aria-live={feedback.ok ? "polite" : "assertive"}
           title={feedback.ok ? "Saved" : "Could not save"}
           color={feedback.ok ? "emerald" : "red"}
           className="mb-3"
@@ -326,6 +337,10 @@ export function AgentSettingsTab() {
               <button
                 key={severity}
                 type="button"
+                // Selection was signalled only by an emerald tint — invisible
+                // to a screen reader and to anyone who cannot separate the
+                // two greens.
+                aria-pressed={enabled}
                 onClick={() =>
                   set(
                     "auto_investigate_severities",

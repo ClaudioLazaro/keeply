@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiops_api.modules.specialists.base import Budget
+from aiops_api.modules.specialists.base import Budget, Scope
 from aiops_api.modules.specialists.builtin import (
     ArgoCdSpecialist,
     AwsEksSpecialist,
@@ -52,7 +52,7 @@ def test_kubernetes_specialist_chains_pod_to_logs():
         raise AssertionError(f"unexpected tool {tool}")
 
     spec = KubernetesSpecialist()
-    result = spec.gather(catalog={}, invoke=invoke, budget=Budget(), used=_tracker())
+    result = spec.gather(catalog={}, invoke=invoke, budget=Budget(), used=_tracker(), scope=Scope())
     assert [c[0] for c in calls] == ["get_pods", "get_events", "get_logs"]
     assert result.extra_evidence["pod_name"] == "payment-api-7d9f"
     assert all(not call.is_gap for call in result.calls)
@@ -66,6 +66,7 @@ def test_specialist_converts_tool_failure_to_evidence_gap():
         invoke=_invoke_raise("boom"),
         budget=Budget(),
         used=_tracker(),
+            scope=Scope(),
     )
     assert all(call.is_gap for call in result.calls)
     assert "boom" in result.calls[0].error
@@ -74,14 +75,14 @@ def test_specialist_converts_tool_failure_to_evidence_gap():
 def test_specialist_charges_tool_call_budget():
     spec = JiraSpecialist()
     tracker = _tracker()
-    spec.gather(catalog={}, invoke=_invoke_ok({"issues": []}), budget=Budget(), used=tracker)
+    spec.gather(catalog={}, invoke=_invoke_ok({"issues": []}), budget=Budget(), used=tracker, scope=Scope())
     assert tracker.tool_calls == len(spec.tools)
 
 
 @pytest.mark.parametrize(
     "spec,expected_tools",
     [
-        (KubernetesSpecialist(), ("get_pods", "get_events", "get_logs")),
+        (KubernetesSpecialist(), ("get_pods", "get_events", "get_logs", "find_workload")),
         (PrometheusSpecialist(), ("prom_alerts", "prom_query", "prom_query_range")),
         (DatadogSpecialist(), ("dd_query_metrics", "dd_list_events")),
         (AwsEksSpecialist(), ("eks_list_clusters", "eks_describe_nodegroups")),
@@ -106,6 +107,7 @@ def test_specialist_summary_present_on_success():
         invoke=_invoke_ok({"entity": {"name": "payment-api"}}),
         budget=Budget(),
         used=_tracker(),
+            scope=Scope(),
     )
     assert result.calls[0].summary is not None
     assert "backstage_get_entity" in result.calls[0].summary

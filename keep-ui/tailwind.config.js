@@ -33,24 +33,29 @@ module.exports = {
             emphasis: "#374151", //  gray-700
             inverted: "#ffffff", // white
           },
+          // Warm neutrals (stone), not pure white and not pure black.
+          // #fff against #000 is 21:1 — the maximum a screen can produce, and
+          // the classic glare pairing. This is an operations console people
+          // read for a whole shift, so both ends move toward the middle while
+          // staying far above AA. Measured ratios are in the comments.
           background: {
-            muted: "#f9fafb", // gray-50
-            subtle: "#f9fafb", // orange-200
-            DEFAULT: "#ffffff", // white
-            emphasis: "#374151", // gray-700
+            muted: "#f5f5f4", // stone-100
+            subtle: "#f5f5f4", // stone-100
+            DEFAULT: "#fafaf9", // stone-50 — off-white, warm, pairs with the orange brand
+            emphasis: "#292524", // stone-800
           },
           border: {
-            DEFAULT: "#e5e7eb", // gray-200
+            DEFAULT: "#d6d3d1", // stone-300 — the old gray-200 barely separated surfaces
           },
           ring: {
-            DEFAULT: "#e5e7eb", // gray-200
+            DEFAULT: "#d6d3d1", // stone-300
           },
           content: {
-            subtle: "#646464", // Custom black-400 (light black)
-            DEFAULT: "#333333", // Custom black-500 (standard black)
-            emphasis: "#1a1a1a", // Custom black-700 (darker black)
-            strong: "#000000", // Custom black-900 (the darkest black)
-            inverted: "#ffffff", // white
+            subtle: "#57534e", // stone-600  — 7.30:1
+            DEFAULT: "#44403c", // stone-700 — 9.84:1
+            emphasis: "#1c1917", // stone-900 — 16.74:1
+            strong: "#0c0a09", // stone-950 — 18.92:1
+            inverted: "#fafaf9",
           },
         },
         // dark mode
@@ -70,17 +75,21 @@ module.exports = {
             emphasis: "#d1d5db", // gray-300
           },
           border: {
-            DEFAULT: "#1f2937", // gray-800
+            DEFAULT: "#3f4a5f", // 1.99:1 — gray-800 was invisible against the surface
           },
           ring: {
-            DEFAULT: "#1f2937", // gray-800
+            DEFAULT: "#3f4a5f",
           },
+          // Body text was #6b7280 on #111827 — 3.67:1, below the AA minimum
+          // of 4.5:1, and `subtle` was 2.35:1. Dark mode was not merely dim,
+          // it was non-compliant, and squinting at low-contrast grey is the
+          // fatigue this change is meant to remove.
           content: {
-            subtle: "#4b5563", // gray-600
-            DEFAULT: "#6b7280", // gray-600
-            emphasis: "#e5e7eb", // gray-200
-            strong: "#f9fafb", // gray-50
-            inverted: "#000000", // black
+            subtle: "#94a3b8", // slate-400 — 6.92:1 (was 2.35:1)
+            DEFAULT: "#cbd5e1", // slate-300 — 11.95:1 (was 3.67:1)
+            emphasis: "#e2e8f0", // slate-200 — 14.39:1
+            strong: "#f8fafc", // slate-50 — 16.96:1
+            inverted: "#0c0a09",
           },
         },
       },

@@ -69,6 +69,15 @@ const evidenceItems: InvestigationEvidence[] = [
     investigation_id: "inv-1",
     tool: "k8s_get_pods",
     summary: "payment-api pods are CrashLoopBackOff",
+    backend: "live",
+    payload: {
+      arguments: { cluster: "prod-eu", namespace: "payments" },
+      result: {
+        backend: "live",
+        cluster: "prod-eu",
+        pods: [{ name: "payment-api-7d9f", reason: "CrashLoopBackOff" }],
+      },
+    },
     created_at: "2026-07-29T10:00:10Z",
   },
   {
@@ -146,6 +155,20 @@ describe("InvestigationPanel", () => {
     feedbackData = undefined;
   });
 
+
+  it("lets an operator reach the evidence behind the summary", () => {
+    // The summary says something was collected; reviewing a hypothesis means
+    // checking WHAT. That used to be unreachable — the API returned the
+    // payload and the UI dropped it.
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expect(screen.getByText(/payment-api-7d9f/)).toBeInTheDocument();
+    expect(screen.getByText(/called with:/)).toHaveTextContent("cluster=prod-eu");
+  });
+
+  it("shows which target answered, so the provenance claim is checkable", () => {
+    render(<InvestigationPanel incidentId={INCIDENT_ID} />);
+    expect(screen.getByText("prod-eu")).toBeInTheDocument();
+  });
 
   it("hits /api/aiops/v1/ for every investigation request", () => {
     const requested: string[] = [];

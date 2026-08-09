@@ -17,6 +17,7 @@ from typing import Any, Callable
 from aiops_api.modules.specialists.base import (
     Budget,
     BudgetTracker,
+    Scope,
     Specialist,
     SpecialistResult,
     ToolCall,
@@ -114,6 +115,109 @@ def _pod_trouble_score(pod: Any) -> int:
     return score
 
 
+def _requires(catalog: dict[str, Any], tool: str, argument: str) -> bool:
+    """Whether the live catalog says this tool requires this argument.
+
+    Lets one specialist serve both tool meshes. The legacy HTTP tools resolved
+    their Kubernetes target implicitly and took no ``cluster``; the MCP server
+    requires it, precisely so the target can never be implicit again. Reading
+    the schema instead of branching on a transport flag means the specialist
+    keeps working through either, and keeps working when a tool's contract
+    tightens.
+    """
+    entry = catalog.get(tool) or {}
+    schema = entry.get("input_schema") or entry.get("inputSchema") or {}
+    return argument in (schema.get("required") or [])
+
+
+def _accepts(catalog: dict[str, Any], tool: str, argument: str) -> bool:
+    """Whether the tool takes this argument at all, per the live catalog."""
+    entry = catalog.get(tool) or {}
+    schema = entry.get("input_schema") or entry.get("inputSchema") or {}
+    properties = schema.get("properties")
+    # A tool with no published schema is assumed to accept it: the legacy
+    # gateway published none and took `namespace` happily, and passing an
+    # argument that is ignored is harmless next to not scoping at all.
+    return argument in properties if isinstance(properties, dict) else True
+
+
+def _target_args(catalog: dict[str, Any], tool: str) -> dict[str, Any]:
+    """Cluster scoping for tools that demand it.
+
+    The cluster name is configuration today (``AIOPS_MCP_DEFAULT_CLUSTER``).
+    Deriving it from the incident's affected services is the next step and the
+    one that actually closes the gap — a configured default is still a single
+    target, it is just an *honest* one: it is declared, and every result says
+    which cluster answered rather than leaving it to be inferred.
+    """
+    if not _requires(catalog, tool, "cluster"):
+        return {}
+    from aiops_api.settings import get_settings
+
+    return {"cluster": get_settings().mcp_default_cluster}
+
+
+def _locate_services(
+    catalog: dict[str, Any],
+    invoke: InvokeFn,
+    used: BudgetTracker,
+    scope: Scope,
+) -> tuple[list[str], ToolCall | None]:
+    """Find the namespaces the incident's services actually run in.
+
+    Discovery beats convention. Mapping a service to a namespace by assuming
+    they share a name works until it doesn't — a service called
+    ``my-service-brasil`` may live in a namespace named something else
+    entirely, while a pod called ``my-service-brasil-aja6sa`` sits there
+    plainly saying so. One cluster-wide lookup answers that, and every query
+    after it is scoped.
+
+    The lookup is recorded as evidence, carrying the ``matched_by`` reason for
+    each service. That is the point of doing the matching here rather than
+    asking a model: an operator can check "we looked in `payments` because a
+    pod named `my-service-brasil-aja6sa` is running there". A grouping nobody
+    can audit is one nobody can correct.
+
+    Falls back to the configured guess when the tool is unavailable (the
+    legacy mesh has no such tool), and returns no namespaces when the incident
+    named no service — the caller then sweeps, and labels the sweep.
+    """
+    if not scope.services or "find_workload" not in catalog:
+        return list(scope.namespaces), None
+
+    args = _target_args(catalog, "find_workload")
+    args["services"] = list(scope.services)
+    call = _safe_call("find_workload", args, invoke, used)
+    if call.is_gap or not isinstance(call.result, dict):
+        # Discovery failed; the configured guess is better than a sweep.
+        return list(scope.namespaces), call
+
+    matches = call.result.get("matches") or []
+    namespaces: list[str] = []
+    reasons: list[str] = []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        namespace = match.get("namespace")
+        if isinstance(namespace, str) and namespace and namespace not in namespaces:
+            namespaces.append(namespace)
+        reasons.append(
+            f"{match.get('service')} -> {namespace} ({match.get('matched_by')}"
+            + (f", e.g. {match['sample_pod']}" if match.get("sample_pod") else "")
+            + ")"
+        )
+
+    unresolved = [str(s) for s in (call.result.get("unresolved") or [])]
+    summary = f"find_workload: located {len(namespaces)} namespace(s) — " + "; ".join(reasons)
+    if unresolved:
+        # Naming what could NOT be found matters: those services are absent
+        # from the evidence that follows, and silence would hide that.
+        summary += f". Not found: {', '.join(unresolved)}"
+    call.summary = summary
+
+    return namespaces or list(scope.namespaces), call
+
+
 def _select_pod(pods_result: Any) -> tuple[str, str | None] | None:
     """Pick the pod whose logs are most likely to explain the incident."""
     items = None
@@ -134,7 +238,7 @@ def _select_pod(pods_result: Any) -> tuple[str, str | None] | None:
 
 class KubernetesSpecialist:
     name = "kubernetes"
-    tools: tuple[str, ...] = ("get_pods", "get_events", "get_logs")
+    tools: tuple[str, ...] = ("get_pods", "get_events", "get_logs", "find_workload")
 
     def gather(
         self,
@@ -143,19 +247,43 @@ class KubernetesSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget  # not used directly; the tracker enforces
-        del catalog  # policy gate is in the gateway; specialist just calls
         calls: list[ToolCall] = []
-        pods_call = _safe_call("get_pods", {}, invoke, used)
-        calls.append(pods_call)
-        calls.append(_safe_call("get_events", {}, invoke, used))
 
-        selected = _select_pod(pods_call.result) if not pods_call.is_gap else None
+        namespaces, locate_call = _locate_services(catalog, invoke, used, scope)
+        if locate_call is not None:
+            calls.append(locate_call)
+
+        # Ask each namespace the incident points at, rather than sweeping the
+        # cluster and picking something afterwards. The sweep is what let a
+        # stranger's CrashLoopBackOff become evidence for this incident.
+        for namespace in namespaces or [None]:
+            for tool in ("get_pods", "get_events"):
+                args = _target_args(catalog, tool)
+                if namespace and _accepts(catalog, tool, "namespace"):
+                    args["namespace"] = namespace
+                call = _safe_call(tool, args, invoke, used)
+                if namespace is None and not call.is_gap:
+                    # Say it plainly: this is everything the credential can
+                    # see, not the incident's blast radius.
+                    call.summary = (
+                        f"{_summarize(tool, call.result)} "
+                        "(UNSCOPED — the incident named no service to aim at)"
+                    )
+                calls.append(call)
+
+        pods_call = next(
+            (c for c in calls if c.tool == "get_pods" and not c.is_gap and _select_pod(c.result)),
+            next((c for c in calls if c.tool == "get_pods"), None),
+        )
+        selected = _select_pod(pods_call.result) if pods_call and not pods_call.is_gap else None
         pod_name, pod_namespace = selected if selected else (None, None)
 
         if pod_name:
             logs_args: dict[str, Any] = {"pod": pod_name, "tail_lines": 100}
+            logs_args.update(_target_args(catalog, "get_logs"))
             # Namespace is required: get_logs defaults to "default", and the
             # most interesting pod is rarely there.
             if pod_namespace:
@@ -198,8 +326,10 @@ class PrometheusSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = []
         calls.append(_safe_call("prom_alerts", {}, invoke, used))
         calls.append(
@@ -244,8 +374,10 @@ class DatadogSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "dd_query_metrics",
@@ -284,8 +416,10 @@ class AwsEksSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("eks_list_clusters", {}, invoke, used),
             _safe_call("eks_describe_nodegroups", {"cluster_name": "payments-prod"}, invoke, used),
@@ -314,8 +448,10 @@ class AwsRdsSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("rds_list_instances", {}, invoke, used),
             _safe_call("rds_describe_instance_status", {"instance_id": "payments-db"}, invoke, used),
@@ -344,8 +480,10 @@ class ArgoCdSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("argocd_list_apps", {}, invoke, used),
             _safe_call("argocd_get_app", {"name": "payment-api"}, invoke, used),
@@ -374,8 +512,10 @@ class JiraSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "jira_search_issues",
@@ -408,8 +548,10 @@ class SlackSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call(
                 "slack_search_messages",
@@ -442,8 +584,10 @@ class BitbucketSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("bb_list_recent_commits", {"repo": "payments/payment-api", "max_results": 10}, invoke, used),
             _safe_call("bb_list_open_pull_requests", {"repo": "payments/payment-api"}, invoke, used),
@@ -472,8 +616,10 @@ class BackstageSpecialist:
         invoke: InvokeFn,
         budget: Budget,
         used: BudgetTracker,
+        scope: Scope,
     ) -> SpecialistResult:
         del budget, catalog
+        del scope  # only the kubernetes specialist aims by namespace so far
         calls: list[ToolCall] = [
             _safe_call("backstage_get_entity", {"kind": "Component", "name": "payment-api"}, invoke, used),
         ]

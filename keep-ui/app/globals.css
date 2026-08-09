@@ -144,3 +144,17 @@ html.workaround-dark {
 .tremor-TableRow-row > td.bg-tremor-background {
   background-color: inherit !important;
 }
+
+/*
+ * Tabular figures for data surfaces.
+ *
+ * Proportional digits change width as values update, so a polling table of
+ * counts, durations and timestamps shifts horizontally on every refresh —
+ * small, constant motion in the periphery of someone watching an incident.
+ * Tabular figures fix the advance width so columns stay still.
+ */
+table,
+.tabular-figures {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}

@@ -53,6 +53,30 @@ class SpecialistResult:
         return [call for call in self.calls if not call.is_gap]
 
 
+@dataclass(frozen=True)
+class Scope:
+    """What the investigation is about, so gathering can be aimed at it.
+
+    Without this a specialist queries everything the credential can see. On a
+    shared cluster that meant 55 pods across five namespaces belonging to
+    unrelated projects, one of which was then picked by a "most troubled pod"
+    heuristic and filed as evidence for whatever incident was running.
+
+    ``derived`` is false when the incident carried nothing to aim at. The
+    difference matters: a query that could not be scoped is weaker evidence
+    than one that was, and the specialist says so in the summary rather than
+    letting an unscoped sweep read like a targeted one.
+    """
+
+    cluster: str = ""
+    services: tuple[str, ...] = ()
+    namespaces: tuple[str, ...] = ()
+
+    @property
+    def derived(self) -> bool:
+        return bool(self.namespaces or self.services)
+
+
 class BudgetExceeded(RuntimeError):
     """Raised when a specialist's tool call would breach the per-investigation budget.
 
@@ -105,6 +129,7 @@ class Specialist(Protocol):
         invoke: "Callable[[str, dict[str, Any]], tuple[Any, str | None]]",
         budget: Budget,
         used: "BudgetTracker",
+        scope: Scope,
     ) -> SpecialistResult: ...
 
 
