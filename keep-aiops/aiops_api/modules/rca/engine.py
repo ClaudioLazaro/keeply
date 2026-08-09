@@ -167,12 +167,35 @@ def _call_llm(settings: Settings, incident: dict, evidence: list[Any], knowledge
     if not parsed.hypotheses:
         raise ValueError("LLM returned no hypotheses")
     total_tokens = 0
+    prompt_tokens = completion_tokens = 0
     try:
         usage = getattr(response, "usage", None)
         if usage is not None:
             total_tokens = int(getattr(usage, "total_tokens", 0) or 0)
+            prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+            completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
     except (TypeError, ValueError):  # defensive: provider returned something odd
-        total_tokens = 0
+        total_tokens = prompt_tokens = completion_tokens = 0
+
+    # Tokens say how much was consumed; only money says whether it was worth
+    # it. Recorded here, at the one place that knows both the model and the
+    # split, rather than reconstructed later from a total.
+    from aiops_api import metrics
+    from aiops_api.modules.rca.pricing import price_completion
+
+    model_name = config.llm_model or settings.llm_model
+    cost = price_completion(model_name, prompt_tokens, completion_tokens)
+    metrics.investigation_cost_usd.labels(priced="yes" if cost.priced else "no").inc(cost.usd)
+    logger.info(
+        "llm completion cost",
+        extra={
+            "model": model_name,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "usd": cost.usd,
+            "priced": cost.priced,
+        },
+    )
     return parsed, total_tokens
 
 

@@ -35,6 +35,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
 from mcp_servers.k8s import clusters, stubs
+from mcp_servers.redaction import redact, redact_lines
 from mcp_servers.k8s.models import (
     ClusterInfo,
     ClustersResult,
@@ -283,7 +284,7 @@ def get_events(
                 object=f"{e.involved_object.kind}/{e.involved_object.name}".lower()
                 if e.involved_object
                 else None,
-                message=e.message,
+                message=redact(e.message or "").text,
                 count=e.count or 0,
                 last_timestamp=str(e.last_timestamp) if e.last_timestamp else None,
             )
@@ -441,12 +442,22 @@ def get_logs(cluster: str, pod: str, namespace: str, tail_lines: int = 100) -> L
         # the resource simply is not there.
         return _gap(LogsResult, cluster, describe_error(exc), pod=pod, namespace=namespace)
 
+    # Redacted before the result leaves this process. Container output is
+    # where credentials leak, and from here it becomes stored evidence, is
+    # rendered to the operator, and is sent to whichever LLM provider is
+    # configured — none of which can be un-sent.
+    lines, removed = redact_lines((text or "").splitlines())
+    if removed:
+        logger.info(
+            "redacted secrets from pod logs",
+            extra={"cluster": cluster, "namespace": namespace, "pod": pod, "count": len(removed)},
+        )
     return LogsResult(
         backend="live",
         cluster=cluster,
         pod=pod,
         namespace=namespace,
-        lines=(text or "").splitlines(),
+        lines=lines,
     )
 
 

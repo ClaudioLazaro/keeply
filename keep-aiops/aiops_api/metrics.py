@@ -81,6 +81,16 @@ investigation_cost = Counter(
     labelnames=("kind",),
     namespace=METRIC_NAMESPACE,
 )
+# Money, separate from the resource counter above because it answers a
+# different question: the counter says how much was consumed, this says what it
+# was worth. `priced` carries whether the model was in the price table — an
+# unpriced model contributes 0.0 and must never be read as free.
+investigation_cost_usd = Counter(
+    "investigation_cost_usd_total",
+    "Estimated LLM spend, in USD. Labels: priced (yes|no).",
+    labelnames=("priced",),
+    namespace=METRIC_NAMESPACE,
+)
 investigation_cost_exceeded = Counter(
     "investigation_cost_exceeded_total",
     "Investigations that failed because a cost budget was exceeded.",

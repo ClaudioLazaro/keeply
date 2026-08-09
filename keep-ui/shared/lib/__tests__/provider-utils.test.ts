@@ -7,7 +7,7 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: true
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);
@@ -17,7 +17,7 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);
@@ -27,14 +27,14 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [
         {
           id: '1',
           type: 'slack',
           config: { apiKey: 'some-key' }
-        } as Provider
-      ];
+        } as unknown as Provider
+      ] as unknown as Provider[];
       
       expect(isProviderInstalled(provider, providers)).toBe(false);
     });
@@ -43,14 +43,14 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [
         {
           id: '1',
           type: 'slack',
           config: {}
-        } as Provider
-      ];
+        } as unknown as Provider
+      ] as unknown as Provider[];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);
     });
@@ -59,14 +59,14 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [
         {
           id: '1',
           type: 'slack',
           config: {}
-        } as Provider
-      ];
+        } as unknown as Provider
+      ] as unknown as Provider[];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);
     });
@@ -75,14 +75,14 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [
         {
           id: '1',
           type: 'discord',
           config: { token: 'some-token' }
-        } as Provider
-      ];
+        } as unknown as Provider
+      ] as unknown as Provider[];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);
     });
@@ -91,19 +91,19 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [
         {
           id: '1',
           type: 'discord',
           config: { token: 'some-token' }
-        } as Provider,
+        } as unknown as Provider,
         {
           id: '2',
           type: 'slack',
           config: { apiKey: 'some-key' }
-        } as Provider
-      ];
+        } as unknown as Provider
+      ] as unknown as Provider[];
       
       expect(isProviderInstalled(provider, providers)).toBe(false);
     });
@@ -112,7 +112,7 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       
       // @ts-ignore - Intentionally passing undefined to test handling
       expect(isProviderInstalled(provider, undefined)).toBe(true);
@@ -122,7 +122,7 @@ describe('provider-utils', () => {
       const provider = {
         type: 'slack',
         installed: false
-      };
+      } as unknown as Provider;
       
       // @ts-ignore - Intentionally passing null to test handling
       expect(isProviderInstalled(provider, null)).toBe(true);
@@ -132,7 +132,7 @@ describe('provider-utils', () => {
       const provider = {
         // @ts-ignore - Intentionally omitting type to test handling
         installed: true
-      };
+      } as unknown as Provider;
       const providers: Provider[] = [];
       
       expect(isProviderInstalled(provider, providers)).toBe(true);

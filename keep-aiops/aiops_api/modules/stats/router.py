@@ -8,6 +8,7 @@ Tenant isolation follows the orchestrator read API: when auth is enabled
 every count is scoped to the request tenant.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
@@ -20,6 +21,8 @@ from aiops_api.modules.auth import TenantContext, get_tenant_context
 from aiops_api.modules.feedback.models import InvestigationFeedback
 from aiops_api.modules.orchestrator.models import Evidence, Investigation
 from aiops_api.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/stats", tags=["stats"])
 
@@ -35,6 +38,19 @@ INVESTIGATION_STATUSES = [
     "failed",
     "cancelled",
 ]
+
+
+class LlmSpend(BaseModel):
+    """What the model work has cost, and how much of it we can price.
+
+    `unpriced_completions` is the honest counterpart to `usd`: a model absent
+    from the price table contributes nothing to the total, so a non-zero count
+    here means the figure beside it is an underestimate — not a cheap month.
+    """
+
+    usd: float
+    priced_completions: int
+    unpriced_completions: int
 
 
 class BudgetLimits(BaseModel):
@@ -57,6 +73,35 @@ class StatsResponse(BaseModel):
     budget: BudgetLimits
     mode: str
     llm_enabled: bool
+    llm_spend: LlmSpend
+
+
+
+def _llm_spend() -> LlmSpend:
+    """Read spend off the Prometheus counter rather than storing it twice.
+
+    The counter is already the record; a second copy in the database would be
+    one more thing that can disagree with reality.
+    """
+    from aiops_api import metrics
+
+    usd = 0.0
+    priced = unpriced = 0
+    try:
+        for sample_family in metrics.investigation_cost_usd.collect():
+            for sample in sample_family.samples:
+                if not sample.name.endswith("_total"):
+                    continue
+                if sample.labels.get("priced") == "yes":
+                    usd += sample.value
+                    priced += 1
+                else:
+                    unpriced += 1
+    except Exception:  # noqa: BLE001 — a stats page must not fail on accounting
+        logger.warning("could not read llm spend counter", exc_info=True)
+    return LlmSpend(
+        usd=round(usd, 4), priced_completions=priced, unpriced_completions=unpriced
+    )
 
 
 @router.get("")
@@ -119,6 +164,7 @@ def get_stats(
             max_wall_time_seconds=settings.budget_max_wall_time_seconds,
             max_llm_tokens=settings.budget_max_llm_tokens,
         ),
+        llm_spend=_llm_spend(),
         mode="suggest",  # M0-M3 are suggest-only; M4 introduces other modes
         llm_enabled=bool(settings.llm_model),
     )
