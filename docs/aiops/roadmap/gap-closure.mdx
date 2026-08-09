@@ -1,0 +1,197 @@
+---
+title: "Estratégia de Fechamento de Lacunas"
+description: "Como resolver os defeitos e lacunas conhecidos da plataforma, na ordem em que resolvê-los torna o resto mais barato."
+---
+
+<Warning>
+**Ordem importa mais que a lista.** Qualquer pessoa consegue enumerar
+pendências; o valor deste documento está em por que uma vem antes da outra.
+Faça as fases em ordem — cada uma reduz o custo de errar na seguinte.
+</Warning>
+
+## O princípio que organiza tudo
+
+Toda falha séria encontrada nesta plataforma foi achada **medindo, não lendo o
+código**. E em cinco casos separados, o instrumento que dizia "está tudo bem"
+estava errado:
+
+| o que dizia estar certo | o que estava acontecendo |
+|---|---|
+| Eval 6/6 no golden set | media o caminho determinístico; o caminho LLM recebia contagem em vez de evidência |
+| `kubectl auth can-i` = `yes` | a requisição real devolvia 403 — quase declarei o RBAC quebrado quando funcionava |
+| `grep fafaf9` achou a cor no CSS | `fafaf9` é `stone-50` do Tailwind, já emitido antes; o teste não distinguia nada |
+| `rollout successfully rolled out` | build morreu por OOM e subiu imagem de 25 horas atrás |
+| `corroborada=True`, confiança 0.60 | 1 evidência live entre 4 — quase o dobro do que a evidência sustentava |
+
+Cinco vezes o instrumento mentiu. Isso não é coincidência, é padrão — e é o
+que permite as outras lacunas se esconderem.
+
+**Daí a espinha da estratégia: consertar os instrumentos antes de construir em
+cima deles.** Construir features sobre medição falsa é como otimizar com o
+profiler desligado.
+
+### Regra permanente
+
+> Nenhuma correção está pronta até ser verificada por um método **que poderia
+> ter falhado**. Se o teste passa com e sem a correção, ele não é verificação —
+> é decoração.
+
+Usada nesta sessão: reverter o `gate.release()` e confirmar que o teste
+quebra; reverter cada correção de acessibilidade e confirmar que a query
+semântica falha. Custa um minuto e é a diferença entre saber e supor.
+
+---
+
+## Fase 0 — Aterrissar o que existe
+
+**Por que primeiro:** há 14 commits numa branch que a `main` não tem, e o
+cluster roda código sem nenhum deles. Duas correções ao mecanismo central de
+honestidade do produto — confiança proporcional e abstenção — estão invisíveis
+para quem usa. Todo trabalho novo empilha risco em cima de trabalho não
+entregue.
+
+| item | critério de pronto |
+|---|---|
+| Merge de `feat/mcp-contextforge` na `main` | `git log main` contém os 14 commits |
+| Build e deploy de `aiops-api` | `is_conclusive` existe no pod em execução |
+| Corrigir o registry do `deploy.sh` | `deploy.sh ui` completa sem contorno manual |
+
+O registry entra aqui e não em "melhorias": ele já causou **duas** subidas
+manuais com retag, e uma delas mascarou um build que falhou. Ferramenta de
+deploy que mente é da mesma família dos outros cinco instrumentos.
+
+Corrigir exige `insecure-registries` no `daemon.json` e reiniciar o Docker —
+o que derruba o cluster. Fazer numa janela combinada.
+
+**Tamanho:** 1 dia.
+
+---
+
+## Fase 1 — Consertar os instrumentos
+
+**Por que antes de features:** enquanto o portão de qualidade medir o caminho
+errado, defeitos sérios continuam passando. Já passou um.
+
+### 1.1 Eval pelo caminho de produção
+
+O `eval/run_eval.py` roda o **fallback determinístico** — sem LLM, sem rede,
+sem banco. Em produção roda o caminho LLM. Foi exatamente por isso que
+"o modelo recebia contagem em vez de evidência" sobreviveu com 6/6 verde.
+
+**Como:** um duplo de LLM que devolve resposta gravada, rodando o mesmo golden
+set pelo `generate_rca` real. Não precisa de chave nem de rede.
+
+**Pronto quando:** o eval falha se o prompt deixar de carregar detalhe de
+evidência. Verificar removendo o `evidence_detail` e confirmando que quebra.
+
+### 1.2 Custo em dinheiro, por tenant
+
+Hoje o budget limita `tool_calls`, `wall_time` e `tokens`. Nenhum é dinheiro.
+Com dez fontes reais e plano adaptativo, *"quanto custou e valeu a pena"* é
+pergunta sem resposta — e a cadeia é multiplicativa: correlação propõe regra →
+regra cria incidente → incidente dispara investigação → investigação gasta
+chamadas e tokens. Não há freio econômico em ponto nenhum.
+
+**Pronto quando:** `/v1/stats` reporta custo por investigação e acumulado por
+tenant, e o budget pode ser expresso em moeda.
+
+### 1.3 Zerar os 17 erros de tipo
+
+Fixtures de teste sem a propriedade `mode`. Pequeno, mas `tsc` com ruído
+permanente é mais um instrumento que ninguém olha.
+
+**Tamanho da fase:** 3–4 dias.
+
+---
+
+## Fase 2 — Decidir as fronteiras
+
+**Por que antes de construir:** três decisões estão bloqueando código, e
+escrever esse código antes delas é retrabalho garantido.
+
+| decisão | o que trava hoje |
+|---|---|
+| **Modelo de alvo** — `(conta, região, recurso)` | multi-conta AWS; o `MCP_K8S_CLUSTERS` é armazém paralelo que viola o `17107c29` |
+| **Contrato do plano adaptativo** | cada ramificação registra sua razão, senão vira caixa-preta |
+| **Os três registros** — ContextForge / providers do Keep / agent config | a UI de configuração inteira |
+
+Estas viram **ADR**, não código. O repositório já tem 7; é onde decisão de
+fronteira pertence.
+
+O passo que destrava as três: **instalar o provider Datadog no Keep** apontando
+para o ambiente real. Sem isso, a associação é desenhada contra tabela vazia.
+
+**Tamanho:** 2–3 dias de escrita, mais a decisão.
+
+---
+
+## Fase 3 — Construir contra o ecossistema real
+
+Ordem definida pelo que **ancora** a investigação, não pelo que é fácil.
+
+1. **Datadog** — monitor, métrica, APM e log. É a âncora de toda investigação
+   (o alerta nasce lá) e o `trace_id` liga incidente → chamada que falhou →
+   log daquela chamada. É também a segunda amostra arquitetural: escopo é
+   `serviço + env + janela`, não `cluster + namespace`, então prova se o
+   `Scope` generaliza ou se foi escrito "namespace" com nome genérico.
+2. **AWS como grupo** — EKS, RDS, SQS, SNS compartilham resolução de
+   credencial multi-conta. Resolver uma vez serve os quatro.
+3. **ArgoCD, Bitbucket, Jira, Backstage** — mais simples, e se beneficiam do
+   plano já existir.
+
+Cada servidor MCP resolve alvo **via provider do Keep**, nunca por registro
+próprio. Ao terminar o Datadog, remover `MCP_K8S_CLUSTERS` e os `fields`
+vestigiais do `catalog.py`, que anunciam configuração que não faz nada.
+
+**Tamanho:** 2 semanas por servidor grande.
+
+---
+
+## Fase 4 — Fechar os laços
+
+### 4.1 Consumir o feedback
+
+`investigation_feedback` enche, a UI coleta polegares, **nada consome**. Um
+produto que pede avaliação e não a usa ensina o operador a parar de avaliar.
+A RFC-0002 já prevê o uso: indexar RCAs anteriores com o sinal como feature de
+rerank.
+
+### 4.2 Plano adaptativo — junto com a UI dele
+
+Não em sequência. Se o plano nascer sem visualização, entregamos
+não-determinismo sem a compensação que o torna aceitável. A UI é onde o
+operador lê **por que** a investigação foi por ali.
+
+### 4.3 Redação de segredos
+
+Adiada quando só `keeply` era legível; o RBAC agora alcança log de todo o
+cluster. O portão natural é **antes de `AIOPS_LLM_MODEL` ser preenchido** —
+depois disso a exposição já aconteceu e não dá para des-enviar.
+
+Módulo compartilhado desde o início: Slack e Jira carregam muito mais PII que
+log de container.
+
+---
+
+## O que fica fora, e por quê
+
+| item | decisão |
+|---|---|
+| Cortar o `mcp_gateway` legado | só depois do caminho MCP estar deployado e estável; hoje ele é o rollback |
+| Reduzir o multi-tenancy | 30 arquivos filtram por `tenant_id` e há 1 tenant. É custo pago hoje por receita futura — mantenha, mas como escolha consciente |
+| Reescrever a UI | ela funciona e tem 543 testes; o que falta é a tela de associação, que depende da Fase 2 |
+
+---
+
+## Como saber que a estratégia está funcionando
+
+Não por itens riscados, mas por estes três números:
+
+- **Razão de proveniência** (`live` / `stub` / `gap`) na evidência armazenada.
+  Hoje: **238 stub, 35 live, 31 gap**. Se as Fases 2 e 3 funcionarem, `live`
+  domina. Se não subir, os servidores novos não estão realmente conectados.
+- **Distância entre commit e deploy.** Hoje: 14 commits. Deve tender a zero e
+  ficar lá.
+- **Defeitos achados por instrumento vs por acaso.** Hoje quase todos foram
+  achados investigando à mão. Depois da Fase 1, o eval e as métricas deveriam
+  começar a achá-los primeiro.
