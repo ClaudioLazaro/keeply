@@ -947,3 +947,80 @@ def test_a_nonsense_lookback_falls_back_instead_of_crashing():
         assert history_lookback_minutes(
             {"History Lookback (hours)": bad}, window_minutes=10.0
         ) == 10.0 * HISTORY_WINDOWS
+
+
+def test_a_rejected_credential_says_which_system_refused(monkeypatch):
+    # The raw transport error named neither system, so an operator with
+    # nothing to fix saw "Failed" and had no way to know that waiting was
+    # the correct action.
+    import httpx
+
+    from aiops_api.modules.correlation import service as cs
+
+    class _Resp:
+        status_code = 401
+
+    class _Http:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return _Resp()
+
+    suggestion = cs.RuleSuggestion(
+        tenant_id="keep", name="n", cel="x", timeframe_seconds=60,
+        grouping_criteria=[], rationale="r", status="pending",
+        occurrences=2, alerts_covered=4,
+    )
+    from aiops_api.db import session_scope
+    with session_scope() as s:
+        s.add(suggestion); s.flush(); sid = suggestion.id
+
+    monkeypatch.setattr(cs, "_client_http", lambda c: _Http())
+    monkeypatch.setattr(
+        cs, "active_clients",
+        lambda: [cs.CorrelationClient(tenant_id="keep", back_api_url="u", back_api_key="k")],
+    )
+
+    with pytest.raises(cs.CredentialRejected) as excinfo:
+        cs.accept_suggestion(sid)
+
+    message = str(excinfo.value)
+    assert "Keep rejected" in message
+    assert "re-registers" in message  # tells them waiting is the fix
+    assert "401" in message
+
+
+def test_the_suggestion_stays_pending_when_the_credential_is_rejected(monkeypatch):
+    # Marking it accepted would lose the proposal to a transient auth
+    # problem, and the mining that produced it is not free.
+    from aiops_api.modules.correlation import service as cs
+
+    class _Resp:
+        status_code = 403
+
+    class _Http:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return _Resp()
+
+    suggestion = cs.RuleSuggestion(
+        tenant_id="keep", name="n2", cel="x", timeframe_seconds=60,
+        grouping_criteria=[], rationale="r", status="pending",
+        occurrences=2, alerts_covered=4,
+    )
+    from aiops_api.db import session_scope
+    from sqlmodel import Session
+    from aiops_api.db import get_engine
+    with session_scope() as s:
+        s.add(suggestion); s.flush(); sid = suggestion.id
+
+    monkeypatch.setattr(cs, "_client_http", lambda c: _Http())
+    monkeypatch.setattr(
+        cs, "active_clients",
+        lambda: [cs.CorrelationClient(tenant_id="keep", back_api_url="u", back_api_key="k")],
+    )
+
+    with pytest.raises(cs.CredentialRejected):
+        cs.accept_suggestion(sid)
+
+    with Session(get_engine()) as s:
+        assert s.get(cs.RuleSuggestion, sid).status == "pending"

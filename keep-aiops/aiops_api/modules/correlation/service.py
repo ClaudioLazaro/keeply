@@ -301,6 +301,14 @@ def store_proposals(
     return stored
 
 
+class CredentialRejected(RuntimeError):
+    """Keep refused the API key it registered with us.
+
+    Its own class so the API can answer 502 with an explanation rather than
+    the transport error, which named neither system.
+    """
+
+
 def accept_suggestion(suggestion_id: str) -> dict[str, Any]:
     """Turn a suggestion into a real Keep rule.
 
@@ -334,6 +342,18 @@ def accept_suggestion(suggestion_id: str) -> dict[str, Any]:
 
     with _client_http(client) as http:
         response = http.post("/rules/from-cel", json=payload)
+        if response.status_code in (401, 403):
+            # The credential came from Keep itself, so the operator did
+            # nothing wrong and has nothing to re-enter. Saying which of
+            # the two systems rejected which is the difference between a
+            # wait and a support ticket — the raw HTTPStatusError this
+            # used to raise named neither.
+            raise CredentialRejected(
+                "Keep rejected the credential it gave us for this tenant "
+                f"(HTTP {response.status_code}). Nothing to re-enter: Keep "
+                "re-registers it on its next correlation cycle, and this "
+                "will work once it does."
+            )
         response.raise_for_status()
         rule = response.json()
 

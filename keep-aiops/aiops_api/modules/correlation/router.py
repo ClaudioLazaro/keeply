@@ -104,6 +104,9 @@ def accept(suggestion_id: str) -> dict[str, Any]:
         return service.accept_suggestion(suggestion_id)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.CredentialRejected as exc:
+        # 503, not 502: the request was fine and will succeed on retry.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — surface Keep's rejection verbatim
         raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
 
