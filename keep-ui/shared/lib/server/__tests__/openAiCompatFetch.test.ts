@@ -1,6 +1,6 @@
 import { openAiCompatFetch, __testing } from "../openAiCompatFetch";
 
-const { rewriteRoles } = __testing;
+const { rewriteForCompatibility: rewriteRoles } = __testing;
 
 /**
  * The failure this prevents is silent: the AI Summary button produced
@@ -31,6 +31,32 @@ describe("rewriteRoles", () => {
 
   it("ignores payloads that are not chat completions", () => {
     const body = JSON.stringify({ input: "embed me" });
+    expect(rewriteRoles(body)).toBe(body);
+  });
+});
+
+describe("tool_choice compatibility", () => {
+  it("downgrades a compelled tool call to an offered one", () => {
+    // DeepSeek reasoning models answer 400 "Thinking mode does not support
+    // this tool_choice" for `required` and for a forced function. The whole
+    // request failed on load, so the workflow builder chat never opened.
+    for (const choice of ["required", { type: "function", function: { name: "x" } }]) {
+      const out = JSON.parse(
+        rewriteRoles(JSON.stringify({ messages: [], tool_choice: choice }))
+      );
+      expect(out.tool_choice).toBe("auto");
+    }
+  });
+
+  it("leaves the values the provider accepts alone", () => {
+    for (const choice of ["auto", "none"]) {
+      const body = JSON.stringify({ messages: [], tool_choice: choice });
+      expect(rewriteRoles(body)).toBe(body);
+    }
+  });
+
+  it("does not invent a tool_choice where the caller sent none", () => {
+    const body = JSON.stringify({ messages: [{ role: "user", content: "hi" }] });
     expect(rewriteRoles(body)).toBe(body);
   });
 });

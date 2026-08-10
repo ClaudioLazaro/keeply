@@ -25,7 +25,28 @@
 const OPENAI_ONLY_ROLE = "developer";
 const UNIVERSAL_ROLE = "system";
 
-function rewriteRoles(body: string): string {
+/**
+ * `required` and a forced `{type:"function"}` compel a tool call. DeepSeek's
+ * reasoning models reject both outright:
+ *
+ *     400 Thinking mode does not support this tool_choice
+ *
+ * `auto` and `none` are accepted. So the request is downgraded from compelling
+ * to *asking* — the model may still call the tool, and usually does, but is no
+ * longer forced to.
+ *
+ * That is a real behavioural difference, not a transparent shim: a flow that
+ * depends on a guaranteed tool call (CopilotKit's suggestions force one) can
+ * come back empty instead of erroring. Empty is the better failure — the
+ * builder chat stays usable, where before the whole request 400'd on load.
+ */
+function downgradeToolChoice(value: unknown): "auto" | null {
+  if (value === "required") return "auto";
+  if (value && typeof value === "object") return "auto";
+  return null;
+}
+
+function rewriteForCompatibility(body: string): string {
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
@@ -40,11 +61,21 @@ function rewriteRoles(body: string): string {
   ) {
     return body;
   }
-  const payload = parsed as { messages: Array<{ role?: unknown }> };
+  const payload = parsed as {
+    messages: Array<{ role?: unknown }>;
+    tool_choice?: unknown;
+  };
   let changed = false;
   for (const message of payload.messages) {
     if (message?.role === OPENAI_ONLY_ROLE) {
       message.role = UNIVERSAL_ROLE;
+      changed = true;
+    }
+  }
+  if ("tool_choice" in payload) {
+    const downgraded = downgradeToolChoice(payload.tool_choice);
+    if (downgraded) {
+      payload.tool_choice = downgraded;
       changed = true;
     }
   }
@@ -64,7 +95,7 @@ export function openAiCompatFetch(
     if (init?.method?.toUpperCase() !== "POST" || typeof init.body !== "string") {
       return baseFetch(input, init);
     }
-    const body = rewriteRoles(init.body);
+    const body = rewriteForCompatibility(init.body);
     if (body === init.body) return baseFetch(input, init);
 
     // The rewrite shortens the body ("developer" -> "system"), and the OpenAI
@@ -78,4 +109,4 @@ export function openAiCompatFetch(
   };
 }
 
-export const __testing = { rewriteRoles };
+export const __testing = { rewriteForCompatibility };
