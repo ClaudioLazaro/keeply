@@ -15,7 +15,7 @@ from dotenv import find_dotenv, load_dotenv
 from fastapi.encoders import jsonable_encoder
 from google.cloud.sql.connector import Connector
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import event, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.ddl import CreateColumn
@@ -183,7 +183,59 @@ def create_db_engine():
             echo=DB_ECHO,
             json_serializer=dumps,
         )
+
+    if engine.dialect.name == "sqlite":
+        _configure_sqlite(engine)
     return engine
+
+
+# SQLite's default journal makes a writer lock the whole database file, and
+# its default busy timeout is zero — a connection that cannot get the lock
+# fails immediately rather than waiting.
+#
+# Both defaults showed up in production at once. Ingesting a provider's
+# alert history put several gunicorn workers and the background job into
+# concurrent writes; fourteen events lost the race and raised
+# `OperationalError: database is locked`. Because that traceback ends in
+# SQLAlchemy's `do_execute` rather than a provider's `_format_alert`,
+# `process_event_task` classified it as an internal bug and told the
+# operator to "contact Keep team" — for a lock timeout, about their own
+# alerts, which were then parked and never retried.
+#
+# WAL lets readers run against a snapshot while one writer proceeds, so
+# reads stop blocking entirely. The busy timeout makes a competing writer
+# wait its turn instead of failing, which is what any of those fourteen
+# needed — the lock was held for milliseconds.
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("KEEP_SQLITE_BUSY_TIMEOUT_MS", 15000))
+
+
+def _configure_sqlite(engine) -> None:
+    """Apply WAL and a busy timeout to every SQLite connection.
+
+    `journal_mode` is a property of the database file and survives, so the
+    first connection sets it and the rest confirm it. That first one has to
+    happen while the file is quiet — the pragma needs the exclusive lock it
+    exists to relieve — which at startup it is, before the process serves
+    traffic. Failures are swallowed for exactly this reason: a later
+    connection finding the file busy must not take the process down over a
+    setting that is already applied.
+
+    The busy timeout is per connection, so it is set on every checkout.
+    """
+
+    @event.listens_for(engine, "connect")
+    def _set_pragmas(dbapi_connection, _record):  # pragma: no cover - driver hook
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+            # Durable enough for an alert store, and markedly cheaper than
+            # FULL under the write bursts a provider backfill produces.
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        except Exception:  # noqa: BLE001 - never block startup on a pragma
+            logger.warning("could not apply SQLite pragmas", exc_info=True)
+        finally:
+            cursor.close()
 
 
 def get_json_extract_field(session, base_field, key):
