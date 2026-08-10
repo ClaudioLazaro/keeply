@@ -42,11 +42,21 @@ export interface AiopsStats {
   investigations_last_24h: number;
   evidence_total: number;
   evidence_gaps: number;
+  /** live | stub | gap | unknown — the composition an operator reads before
+   *  trusting any hypothesis. */
+  evidence_by_provenance: Record<string, number>;
+  investigations_daily: { date: string; count: number }[];
   feedback_useful: number;
   feedback_not_useful: number;
   budget: BudgetLimits;
   mode: string;
   llm_enabled: boolean;
+  llm_spend: {
+    usd: number;
+    priced_completions: number;
+    /** Non-zero means `usd` is an underestimate, not a cheap month. */
+    unpriced_completions: number;
+  };
 }
 
 export interface PolicyRule {
@@ -83,6 +93,12 @@ export interface AgentConfig {
   llm_provider: string | null;
   llm_model: string | null;
   llm_enabled: boolean;
+  llm_spend: {
+    usd: number;
+    priced_completions: number;
+    /** Non-zero means `usd` is an underestimate, not a cheap month. */
+    unpriced_completions: number;
+  };
   llm_api_key: LlmKeyStatus;
   budget_max_tool_calls: number;
   budget_max_wall_time_seconds: number;

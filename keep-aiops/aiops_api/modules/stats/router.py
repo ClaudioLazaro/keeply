@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/stats", tags=["stats"])
 
 RECENT_WINDOW_HOURS = 24
+DAILY_WINDOW_DAYS = 14
 
 # Mirrors the FSM in orchestrator.models.Investigation. Listed explicitly so
 # the UI always gets every bucket, including the ones currently at zero.
@@ -53,6 +54,11 @@ class LlmSpend(BaseModel):
     unpriced_completions: int
 
 
+class DailyCount(BaseModel):
+    date: str
+    count: int
+
+
 class BudgetLimits(BaseModel):
     """The configured caps, so the console can show the posture without
     the operator having to read the ConfigMap."""
@@ -68,6 +74,11 @@ class StatsResponse(BaseModel):
     investigations_last_24h: int
     evidence_total: int
     evidence_gaps: int
+    # The composition an operator has to see before reading any hypothesis:
+    # how much of what this platform collected is real. `evidence_gaps` alone
+    # answered "what failed" but never "how much of the rest is demo data".
+    evidence_by_provenance: dict[str, int]
+    investigations_daily: list[DailyCount]
     feedback_useful: int
     feedback_not_useful: int
     budget: BudgetLimits
@@ -144,6 +155,38 @@ def get_stats(
         evidence_total = session.exec(evidence_stmt).one()
         evidence_gaps = session.exec(gap_stmt).one()
 
+        # Provenance composition, from the indexed column.
+        prov_stmt = select(Evidence.backend, func.count()).group_by(Evidence.backend)
+        if tenant_id:
+            prov_stmt = prov_stmt.where(Evidence.investigation_id.in_(scope_ids))
+        provenance_counts = {
+            str(backend or "unknown"): int(count)
+            for backend, count in session.exec(prov_stmt).all()
+        }
+
+        # Fourteen days of activity. Rendered as a trend, so the shape matters
+        # more than the exact bucket: a platform that stopped investigating is
+        # the kind of thing a table of totals hides completely.
+        window_start = datetime.now(timezone.utc) - timedelta(days=DAILY_WINDOW_DAYS)
+        daily_rows = session.exec(
+            scoped(
+                select(Investigation.created_at).where(Investigation.created_at >= window_start)
+            )
+        ).all()
+        buckets: dict[str, int] = {}
+        for created in daily_rows:
+            if created is None:
+                continue
+            key = created.date().isoformat()
+            buckets[key] = buckets.get(key, 0) + 1
+        daily = [
+            DailyCount(
+                date=(window_start + timedelta(days=offset)).date().isoformat(),
+                count=buckets.get((window_start + timedelta(days=offset)).date().isoformat(), 0),
+            )
+            for offset in range(DAILY_WINDOW_DAYS + 1)
+        ]
+
         feedback_stmt = select(InvestigationFeedback.rating, func.count()).group_by(
             InvestigationFeedback.rating
         )
@@ -157,6 +200,8 @@ def get_stats(
         investigations_last_24h=recent,
         evidence_total=evidence_total,
         evidence_gaps=evidence_gaps,
+        evidence_by_provenance=provenance_counts,
+        investigations_daily=daily,
         feedback_useful=feedback.get("useful", 0),
         feedback_not_useful=feedback.get("not_useful", 0),
         budget=BudgetLimits(

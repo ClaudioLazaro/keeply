@@ -158,3 +158,30 @@ table,
   font-variant-numeric: tabular-nums;
   font-feature-settings: "tnum";
 }
+
+/*
+ * Provenance palette.
+ *
+ * Steps chosen per surface rather than flipped, and validated: the shipped
+ * badge pair (amber-600 / red-600) measures ΔE 14.4 in normal vision, below
+ * the 15 floor — stub and gap are hard to separate even with full colour
+ * vision. Survivable on a badge with a text label beside it; not survivable
+ * where two segments touch in a stacked bar. Amber-500 moves the worst
+ * adjacent pair to ΔE 20.9 and passes CVD separation in both themes.
+ *
+ * Grey is deliberately low-chroma: grey *is* the meaning of `unknown`, and a
+ * hue would make it look like a fifth state.
+ */
+:root {
+  --prov-live: #059669;
+  --prov-stub: #f59e0b;
+  --prov-gap: #b91c1c;
+  --prov-unknown: #6b7280;
+}
+
+.dark {
+  --prov-live: #10b981;
+  --prov-stub: #f59e0b;
+  --prov-gap: #ef4444;
+  --prov-unknown: #9ca3af;
+}
