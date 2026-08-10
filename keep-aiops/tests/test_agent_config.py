@@ -494,3 +494,79 @@ def test_scrubbing_leaves_ordinary_values_readable(client):
 
     assert scrub({"model": "deepseek-chat"}) == {"model": "deepseek-chat"}
     assert scrub("unknown assistant functions: ['typo']") == "unknown assistant functions: ['typo']"
+
+
+# --------------------------------------------------------------------------- #
+# Model spelling across the two consumers
+# --------------------------------------------------------------------------- #
+
+
+def test_litellm_gets_the_prefix_it_routes_on(client):
+    from aiops_api.modules.config import to_litellm_model
+
+    assert to_litellm_model("deepseek-v4-flash", "deepseek") == "deepseek/deepseek-v4-flash"
+
+
+def test_an_already_prefixed_model_is_left_alone(client):
+    from aiops_api.modules.config import to_litellm_model
+
+    assert (
+        to_litellm_model("deepseek/deepseek-v4-flash", "deepseek")
+        == "deepseek/deepseek-v4-flash"
+    )
+
+
+def test_a_model_whose_real_name_has_a_slash_is_not_prefixed(client):
+    # `meta-llama/llama-3` is the model's actual name, not a routing prefix.
+    from aiops_api.modules.config import to_litellm_model
+
+    assert to_litellm_model("meta-llama/llama-3", "openrouter") == "meta-llama/llama-3"
+
+
+def test_a_provider_litellm_does_not_know_is_not_invented_into_a_prefix(client):
+    # `openai_compatible` is a Keep concept with no LiteLLM meaning;
+    # prefixing with it would produce a model that resolves to nothing.
+    from aiops_api.modules.config import to_litellm_model
+
+    assert to_litellm_model("some-model", "openai_compatible") == "some-model"
+
+
+def test_the_two_translations_are_inverses(client):
+    # The frontend strips what this adds. If they ever disagree, one of the
+    # two consumers silently talks to the wrong model.
+    from aiops_api.modules.config import to_litellm_model
+
+    stored = "deepseek-v4-flash"
+    for_litellm = to_litellm_model(stored, "deepseek")
+    # Mirror of stripProviderPrefix in keep-ui/shared/lib/server/modelName.ts
+    back = (
+        for_litellm[len("deepseek/") :]
+        if for_litellm.lower().startswith("deepseek/")
+        else for_litellm
+    )
+    assert back == stored
+
+
+def test_the_rca_function_can_use_a_different_model_from_the_builder(client):
+    from aiops_api.modules.config import get_effective_config, model_for
+    from aiops_api.settings import get_settings
+
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-chat"})
+    client.put(
+        "/v1/config",
+        json={"assistants": {"rca": {"model": "deepseek-reasoner"}}},
+    )
+    invalidate_cache()
+
+    resolved = model_for(get_effective_config("*"), "rca", get_settings())
+    assert resolved == "deepseek/deepseek-reasoner"
+
+
+def test_rca_falls_back_to_the_default_when_it_has_no_opinion(client):
+    from aiops_api.modules.config import get_effective_config, model_for
+    from aiops_api.settings import get_settings
+
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-chat"})
+    invalidate_cache()
+
+    assert model_for(get_effective_config("*"), "rca", get_settings()) == "deepseek/deepseek-chat"

@@ -437,11 +437,28 @@ def _configured(monkeypatch, reply: str, captured: dict | None = None):
     module = types.ModuleType("litellm")
     module.completion = _completion
     monkeypatch.setitem(sys.modules, "litellm", module)
+    # A real EffectiveConfig, not a namespace: the wording path now resolves
+    # the model through per-function routing, and a stub that answers only
+    # the attributes yesterday's code touched will quietly stop exercising
+    # the path the moment resolution grows a step.
+    from aiops_api.modules.config.service import EffectiveConfig
+
+    config = EffectiveConfig(
+        llm_provider="deepseek",
+        llm_model="deepseek/deepseek-v4-pro",
+        llm_api_key_env=None,
+        budget_max_tool_calls=50,
+        budget_max_wall_time_seconds=120.0,
+        budget_max_llm_tokens=200_000,
+        context_timeline_limit=50,
+        llm_embedding_model=None,
+    )
     monkeypatch.setattr(
-        "aiops_api.modules.config.get_effective_config",
-        lambda _t: types.SimpleNamespace(
-            llm_model="deepseek/deepseek-v4-pro", llm_api_key="k"
-        ),
+        "aiops_api.modules.config.service.EffectiveConfig.llm_api_key",
+        property(lambda self: "k"),
+    )
+    monkeypatch.setattr(
+        "aiops_api.modules.config.get_effective_config", lambda _t: config
     )
 
 

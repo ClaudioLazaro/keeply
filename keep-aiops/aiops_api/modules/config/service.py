@@ -30,6 +30,53 @@ CACHE_TTL_SECONDS = 10.0
 _cache: dict[str, tuple[float, "EffectiveConfig"]] = {}
 
 
+# Provider names LiteLLM recognises as a routing prefix.
+#
+# Closed on purpose. Keep's provider types and LiteLLM's provider names
+# mostly coincide but not always — `openai_compatible` is a Keep concept
+# with no LiteLLM meaning, and prefixing with it would produce a model
+# string that resolves to nothing. An unlisted provider is left exactly as
+# the operator typed it, which is the behaviour that existed before this
+# normalisation did.
+LITELLM_PROVIDERS = frozenset(
+    {
+        "openai",
+        "anthropic",
+        "deepseek",
+        "gemini",
+        "groq",
+        "mistral",
+        "ollama",
+        "vertex_ai",
+        "xai",
+    }
+)
+
+
+def to_litellm_model(model: str | None, provider: str | None) -> str | None:
+    """Model name in the form LiteLLM routes on.
+
+    The counterpart to the frontend's ``stripProviderPrefix``. The same
+    stored value serves two consumers that disagree about spelling: LiteLLM
+    needs ``provider/model`` to know where to send the call, while the
+    provider's own OpenAI-compatible endpoint rejects the prefix outright,
+    because there the host already answers that question.
+
+    Neither spelling is the "real" one, so neither is stored — each side
+    translates on the way out. Storing one and making the other cope is how
+    the field acquires a hidden convention that the next person gets wrong.
+    """
+    if not model:
+        return model
+    if "/" in model:
+        # Already prefixed, or a model whose real name contains a slash
+        # (`meta-llama/llama-3`). Either way, not ours to rewrite.
+        return model
+    if provider in LITELLM_PROVIDERS:
+        return f"{provider}/{model}"
+    return model
+
+
 @dataclass(frozen=True)
 class AssistantRouting:
     """The resolved answer for one AI feature."""
@@ -40,6 +87,11 @@ class AssistantRouting:
     thinking: str
     #: Fields that fell through to a default rather than being chosen here.
     inherited: list[str] = field(default_factory=list)
+
+    @property
+    def litellm_model(self) -> str | None:
+        """This function's model, spelled the way LiteLLM expects."""
+        return to_litellm_model(self.model, self.provider)
 
 
 @dataclass(frozen=True)
@@ -193,6 +245,19 @@ def get_effective_config(tenant_id: str = GLOBAL_TENANT) -> EffectiveConfig:
 
     _cache[tenant_id] = (now, config)
     return config
+
+
+def model_for(config: EffectiveConfig, function: str, settings: Settings) -> str | None:
+    """The model a given AI feature should call, ready for LiteLLM.
+
+    One place, so the two translations that exist — per-function override
+    and LiteLLM spelling — are applied together everywhere rather than at
+    each call site, where one of them would eventually be forgotten.
+    """
+    routing = config.for_function(function)
+    return routing.litellm_model or to_litellm_model(
+        settings.llm_model or None, routing.provider or config.llm_provider
+    )
 
 
 def invalidate_cache() -> None:

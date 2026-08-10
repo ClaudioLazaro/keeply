@@ -7,7 +7,15 @@ tenant. Credentials are referenced by env-var NAME and never stored.
 from aiops_api.modules.config.service import (
     EffectiveConfig,
     get_effective_config,
+    model_for,
+    to_litellm_model,
     invalidate_cache,
 )
 
-__all__ = ["EffectiveConfig", "get_effective_config", "invalidate_cache"]
+__all__ = [
+    "EffectiveConfig",
+    "get_effective_config",
+    "invalidate_cache",
+    "model_for",
+    "to_litellm_model",
+]

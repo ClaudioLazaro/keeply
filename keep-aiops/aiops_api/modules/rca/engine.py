@@ -129,12 +129,15 @@ def _call_llm(settings: Settings, incident: dict, evidence: list[Any], knowledge
     # Model/credential come from the effective agent config (persisted row
     # over env), so changing the provider in the UI takes effect without a
     # redeploy.
-    from aiops_api.modules.config import get_effective_config
+    from aiops_api.modules.config import get_effective_config, model_for
 
     config = get_effective_config(getattr(incident, "tenant_id", None) or incident.get("tenant_id", "*"))
+    # Resolved once, through the one place that applies both the
+    # per-function override and LiteLLM's spelling.
+    rca_model = model_for(config, "rca", settings)
 
     response = litellm.completion(
-        model=config.llm_model or settings.llm_model,
+        model=rca_model,
         api_key=config.llm_api_key or None,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -183,7 +186,7 @@ def _call_llm(settings: Settings, incident: dict, evidence: list[Any], knowledge
     from aiops_api import metrics
     from aiops_api.modules.rca.pricing import price_completion
 
-    model_name = config.llm_model or settings.llm_model
+    model_name = rca_model
     cost = price_completion(model_name, prompt_tokens, completion_tokens)
     metrics.investigation_cost_usd.labels(priced="yes" if cost.priced else "no").inc(cost.usd)
     logger.info(
@@ -246,10 +249,10 @@ def generate_rca(
 
     # The persisted agent config decides whether the LLM path runs at all;
     # env stays the fallback so an untouched deployment is unchanged.
-    from aiops_api.modules.config import get_effective_config
+    from aiops_api.modules.config import get_effective_config, model_for
 
     agent_config = get_effective_config(investigation.tenant_id)
-    llm_model = agent_config.llm_model or settings.llm_model
+    llm_model = model_for(agent_config, "rca", settings)
 
     with investigation_span(
         investigation.id,

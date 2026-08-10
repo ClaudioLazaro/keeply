@@ -132,12 +132,12 @@ def apply_wording(proposals: list["RuleProposal"], tenant_id: str, samples_by_ce
         return proposals
 
     try:
-        from aiops_api.modules.config import get_effective_config
+        from aiops_api.modules.config import get_effective_config, model_for
         from aiops_api.settings import get_settings
 
         config = get_effective_config(tenant_id)
         settings = get_settings()
-        model = config.llm_model or settings.llm_model
+        model = model_for(config, "rca", settings)
         api_key = config.llm_api_key or None
         timeout = settings.llm_timeout_seconds
     except Exception:  # noqa: BLE001
