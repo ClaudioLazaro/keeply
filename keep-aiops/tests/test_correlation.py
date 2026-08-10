@@ -800,3 +800,150 @@ def test_payload_gates_the_generated_rule_behind_approval():
 
     assert payload["requireApprove"] is True
     assert payload["celQuery"].startswith("service == ")
+
+
+# --------------------------------------------------------------------------- #
+# What real provider data broke
+# --------------------------------------------------------------------------- #
+
+
+def _alert(**kw):
+    base = {
+        "name": "High latency",
+        "service": "checkout-api",
+        "source": ["datadog"],
+        "lastReceived": "2026-08-10T12:00:00Z",
+    }
+    base.update(kw)
+    return base
+
+
+def test_a_placeholder_service_is_not_an_identity():
+    # 413 of 3000 alerts on a real account carried `service: undefined`.
+    # Scored as a value, every pair of them earned the strongest signal in
+    # the model for sharing an absence of information.
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(service="undefined", name="Disk pressure"),
+        _alert(service="undefined", name="Certificate expiring"),
+    )
+
+    assert "same service" not in " ".join(score.reasons)
+
+
+def test_a_real_shared_service_still_counts():
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(_alert(), _alert(name="Latency degraded"))
+
+    assert "same service (checkout-api)" in score.reasons
+
+
+def test_placeholders_are_ignored_inside_a_list_too():
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(service=["undefined"], name="A"),
+        _alert(service=["undefined"], name="B"),
+    )
+
+    assert "same service" not in " ".join(score.reasons)
+
+
+def test_two_clusters_in_one_broad_service_are_not_one_problem():
+    # `service: elasticache` names the technology, not which cluster is
+    # unwell. 955 alerts arrived under it; every pair cleared the default
+    # threshold on service plus source alone.
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(service="elasticache", tags={"cacheclusterid": "prd-sae1-redis"}),
+        _alert(service="elasticache", tags={"cacheclusterid": "prd-sae1-sessions"}),
+    )
+
+    assert score.value < 0.6  # the default Similarity Threshold
+    assert any("different resource" in reason for reason in score.reasons)
+
+
+def test_the_same_cluster_still_groups():
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(service="elasticache", tags={"cacheclusterid": "prd-sae1-redis"}),
+        _alert(service="elasticache", tags={"cacheclusterid": "prd-sae1-redis"}),
+    )
+
+    assert score.value >= 0.6
+
+
+def test_a_missing_resource_tag_is_not_treated_as_disagreement():
+    # Silence is not conflict. Penalising an alert that simply carries no
+    # host tag would punish sparse metadata rather than contradictory
+    # metadata — and most alerts have sparse metadata.
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(service="elasticache", tags={"cacheclusterid": "prd-sae1-redis"}),
+        _alert(service="elasticache", tags={}),
+    )
+
+    assert score.value >= 0.6
+    assert not any("different resource" in reason for reason in score.reasons)
+
+
+def test_the_conflict_says_which_resources_disagreed():
+    # A grouping an operator cannot explain is a grouping they cannot tune.
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        _alert(tags={"host": "prd-esc-log-01"}),
+        _alert(tags={"host": "prd-esc-log-02"}),
+    )
+
+    reason = next(r for r in score.reasons if "different resource" in r)
+    assert "prd-esc-log-01" in reason and "prd-esc-log-02" in reason
+
+
+def test_a_score_never_goes_negative():
+    from aiops_api.modules.correlation.similarity import similarity
+
+    score = similarity(
+        {"name": "A", "tags": {"host": "h1"}},
+        {"name": "B", "tags": {"host": "h2"}},
+    )
+
+    assert score.value >= 0.0
+
+
+def test_history_lookback_is_independent_of_the_grouping_window():
+    # Tight grouping and a long memory are compatible wishes; the old
+    # multiplier made them mutually exclusive.
+    from aiops_api.modules.correlation.service import history_lookback_minutes
+
+    tight = {"History Lookback (hours)": 48.0}
+    assert history_lookback_minutes(tight, window_minutes=5.0) == 48 * 60
+    assert history_lookback_minutes(tight, window_minutes=60.0) == 48 * 60
+
+
+def test_an_unset_lookback_keeps_the_previous_behaviour():
+    # A deployment that never opens the settings page must not silently
+    # change what it mines.
+    from aiops_api.modules.correlation.service import (
+        HISTORY_WINDOWS,
+        history_lookback_minutes,
+    )
+
+    assert history_lookback_minutes({}, window_minutes=10.0) == 10.0 * HISTORY_WINDOWS
+
+
+def test_a_nonsense_lookback_falls_back_instead_of_crashing():
+    from aiops_api.modules.correlation.service import (
+        HISTORY_WINDOWS,
+        history_lookback_minutes,
+    )
+
+    for bad in ("", None, "soon", -5):
+        assert history_lookback_minutes(
+            {"History Lookback (hours)": bad}, window_minutes=10.0
+        ) == 10.0 * HISTORY_WINDOWS

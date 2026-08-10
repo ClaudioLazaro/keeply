@@ -325,11 +325,44 @@ class DatadogProvider(BaseTopologyProvider, ProviderHealthMixin):
         1: AlertSeverity.CRITICAL,
     }
 
+    # Two different vocabularies reach this map, and only one of them was
+    # ever in it.
+    #
+    # The webhook payload carries `alert_transition`, which really does say
+    # "Triggered"/"Recovered". The pull path reads
+    # `monitor.transition.destination_state`, which is the monitor's own
+    # state: "Alert", "Warn", "OK", "No Data". Nothing overlapped, so every
+    # pulled event fell through to the FIRING default — including every
+    # recovery. On a real account that was ~40% of the history stored as
+    # active problems that had already resolved.
+    #
+    # Keyed lowercase and looked up case-insensitively so a vendor
+    # capitalisation change cannot silently reinstate the same bug.
     STATUS_MAP = {
-        "Triggered": AlertStatus.FIRING,
-        "Recovered": AlertStatus.RESOLVED,
-        "Muted": AlertStatus.SUPPRESSED,
+        # Webhook vocabulary (alert_transition)
+        "triggered": AlertStatus.FIRING,
+        "re-triggered": AlertStatus.FIRING,
+        "recovered": AlertStatus.RESOLVED,
+        "muted": AlertStatus.SUPPRESSED,
+        "unmuted": AlertStatus.FIRING,
+        # Monitor-state vocabulary (transition.destination_state)
+        "alert": AlertStatus.FIRING,
+        # A warning threshold is breached: the monitor is alerting, at a
+        # lower severity. Not resolved.
+        "warn": AlertStatus.FIRING,
+        "ok": AlertStatus.RESOLVED,
+        # Datadog reports absence of data as its own state, which Keep
+        # models as PENDING rather than as either firing or resolved.
+        "no data": AlertStatus.PENDING,
+        "skipped": AlertStatus.SUPPRESSED,
     }
+
+    @staticmethod
+    def _map_status(value, default=AlertStatus.FIRING) -> AlertStatus:
+        """Status for a transition or monitor state, whatever its casing."""
+        if not value:
+            return default
+        return DatadogProvider.STATUS_MAP.get(str(value).strip().lower(), default)
 
     def convert_to_seconds(s):
         seconds_per_unit = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
@@ -1115,7 +1148,7 @@ class DatadogProvider(BaseTopologyProvider, ProviderHealthMixin):
 
                     # Map the status using the direct status field
                     status = (
-                        DatadogProvider.STATUS_MAP.get(status_str, AlertStatus.FIRING)
+                        DatadogProvider._map_status(status_str)
                         if not is_muted
                         else AlertStatus.SUPPRESSED
                     )
@@ -1346,9 +1379,7 @@ class DatadogProvider(BaseTopologyProvider, ProviderHealthMixin):
         )
         title = event.get("title")
         # format status and severity to Keep's format
-        status = DatadogProvider.STATUS_MAP.get(
-            event.get("alert_transition"), AlertStatus.FIRING
-        )
+        status = DatadogProvider._map_status(event.get("alert_transition"))
         severity = DatadogProvider.SEVERITIES_MAP.get(
             event.get("severity"), AlertSeverity.INFO
         )

@@ -37,8 +37,21 @@ logger = logging.getLogger(__name__)
 
 REQUEST_TIMEOUT = 20.0
 
-# How many correlation windows of history to analyse. A pattern has to
-# repeat to become a rule, so one window is never enough to judge.
+# How much history to analyse, when the tenant has not said.
+#
+# This used to be a multiplier on the correlation window, which quietly tied
+# two unrelated questions together: how long counts as "the same problem"
+# (minutes) and how far back to look to see a pattern repeat (hours, or
+# days). An operator who wanted tight grouping got a short memory with it,
+# and mining a freshly imported alert history meant loosening the grouping
+# to reach it — which changes what gets proposed, not just how much.
+#
+# 24 hours by default: long enough for a daily pattern to show twice,
+# short enough that a first run is not a full table scan.
+DEFAULT_HISTORY_HOURS = 24.0
+
+# Kept for deployments that set nothing; only used when the tenant supplies
+# neither a history setting nor one this code can read.
 HISTORY_WINDOWS = 30
 
 # Defaults mirror config_default in keep/api/models/db/ai_external.py. They
@@ -48,6 +61,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # it stays off until asked for.
     "Enabled": False,
     "Correlation Window (minutes)": 10.0,
+    # Separate from the window on purpose — see DEFAULT_HISTORY_HOURS.
+    "History Lookback (hours)": DEFAULT_HISTORY_HOURS,
     "Similarity Threshold": 0.6,
     "Minimum Occurrences": 2.0,
     "Max Alerts Per Incident": 20.0,
@@ -416,6 +431,23 @@ def _summarise(
     return "\n".join(lines)
 
 
+def history_lookback_minutes(settings: dict[str, Any], window_minutes: float) -> float:
+    """How far back to mine, in minutes.
+
+    Prefers the tenant's own setting. Falls back to the old window-multiple
+    only when nothing is configured, so an existing deployment that never
+    opens the settings page keeps the behaviour it had.
+    """
+    configured = settings.get("History Lookback (hours)")
+    try:
+        hours = float(configured)
+    except (TypeError, ValueError):
+        hours = 0.0
+    if hours > 0:
+        return hours * 60.0
+    return window_minutes * HISTORY_WINDOWS
+
+
 def run_for_client(client: CorrelationClient) -> dict[str, int]:
     """One analysis pass for one tenant. Never raises.
 
@@ -463,8 +495,11 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     window = settings["Correlation Window (minutes)"]
     # Look back far enough to see a pattern repeat — a single grouping is
     # a coincidence, and the whole point is to only propose what recurs.
+    # Independent of the window: how long is one problem, and how much
+    # history to mine, are different questions with different answers.
+    lookback_minutes = history_lookback_minutes(settings, window)
     try:
-        alerts = fetch_recent_alerts(client, window * HISTORY_WINDOWS)
+        alerts = fetch_recent_alerts(client, lookback_minutes)
     except KeepUnreachable as exc:
         logger.warning(
             "correlation skipped, alert history unreadable",

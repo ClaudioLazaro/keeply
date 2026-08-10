@@ -32,6 +32,36 @@ WEIGHT_SOURCE = 0.15
 WEIGHT_FINGERPRINT = 0.20
 WEIGHT_TEXT = 0.20
 
+# Evidence *against* two alerts being the same problem.
+#
+# Same service plus same source scores exactly the default threshold, which
+# is deliberate calibration — and on a broad service bucket it is wrong.
+# 955 alerts arrived under `service: elasticache`, which names the
+# technology, not which cluster is unwell; every pair of them cleared the
+# bar and would have been proposed as one incident.
+#
+# A bonus for a *shared* resource does not fix that: the pair already
+# cleared the bar without it. What was missing is the negative case — two
+# alerts that each name a resource, and name different ones. Subtracting
+# rather than adding leaves every existing calibration intact and only
+# removes groupings that the data itself contradicts.
+WEIGHT_RESOURCE_CONFLICT = 0.25
+
+# Values that mean "we do not know", not "these are the same thing".
+#
+# On a real Datadog account 413 of 3000 alerts carried `service: undefined`.
+# Treated as a value, every one of them scored a full service match against
+# every other — the strongest signal in the model, awarded for a shared
+# absence of information. A placeholder is the opposite of an identity.
+_PLACEHOLDERS = frozenset(
+    {"undefined", "unknown", "none", "null", "n/a", "na", "-", "unspecified"}
+)
+
+# Where the specific unwell thing is named, in preference order. Read from
+# `tags`, not `labels`: on a real account `labels` was empty on all 9936
+# alerts while these tags were populated.
+_RESOURCE_KEYS = ("host", "resource_name", "cacheclusterid", "pod_name", "instance")
+
 # Words that appear in almost every alert and would inflate text overlap.
 _STOPWORDS = frozenset(
     {
@@ -66,14 +96,39 @@ def _get(alert: Any, *names: str) -> Any:
     return None
 
 
+def _tags(alert: Any) -> dict:
+    """The alert's tag map, whichever shape the caller uses."""
+    tags = _get(alert, "tags", "labels")
+    return tags if isinstance(tags, dict) else {}
+
+
+def _from_tags(alert: Any, keys: tuple[str, ...]) -> Any:
+    """First present tag among `keys`, in preference order."""
+    tags = _tags(alert)
+    for key in keys:
+        value = tags.get(key)
+        if value:
+            return value
+    return None
+
+
 def _as_set(value: Any) -> set[str]:
-    """Keep sends services/sources as either a list or a bare string."""
+    """Keep sends services/sources as either a list or a bare string.
+
+    Placeholder values are dropped here rather than at each call site, so a
+    dimension added later cannot forget the rule.
+    """
     if value is None:
         return set()
     if isinstance(value, str):
-        return {value.strip().lower()} if value.strip() else set()
+        cleaned = value.strip().lower()
+        return {cleaned} if cleaned and cleaned not in _PLACEHOLDERS else set()
     if isinstance(value, Iterable):
-        return {str(item).strip().lower() for item in value if str(item).strip()}
+        return {
+            cleaned
+            for cleaned in (str(item).strip().lower() for item in value)
+            if cleaned and cleaned not in _PLACEHOLDERS
+        }
     return set()
 
 
@@ -146,4 +201,17 @@ def similarity(left: Any, right: Any) -> SimilarityScore:
             shared = sorted(_tokens(left) & _tokens(right))[:4]
             reasons.append(f"wording overlap ({', '.join(shared)})")
 
-    return SimilarityScore(value=round(min(score, 1.0), 3), reasons=reasons)
+    # Applied last, and only when both sides actually name a resource.
+    # Silence is not disagreement: an alert with no host tag says nothing
+    # about whether it is the same box, and penalising it would punish
+    # sparse metadata instead of contradictory metadata.
+    left_resource = _as_set(_from_tags(left, _RESOURCE_KEYS))
+    right_resource = _as_set(_from_tags(right, _RESOURCE_KEYS))
+    if left_resource and right_resource and not (left_resource & right_resource):
+        score -= WEIGHT_RESOURCE_CONFLICT
+        reasons.append(
+            f"different resource ({', '.join(sorted(left_resource))} vs "
+            f"{', '.join(sorted(right_resource))})"
+        )
+
+    return SimilarityScore(value=round(max(min(score, 1.0), 0.0), 3), reasons=reasons)
