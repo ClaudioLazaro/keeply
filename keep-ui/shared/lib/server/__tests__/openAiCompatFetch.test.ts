@@ -146,3 +146,92 @@ describe("openAiCompatFetch", () => {
     expect(base).toHaveBeenCalled();
   });
 });
+
+describe("reasoning_content on replayed tool calls", () => {
+  const toolCall = {
+    id: "c1",
+    type: "function",
+    function: { name: "createStep", arguments: "{}" },
+  };
+
+  it("supplies the field the API demands when a tool call is replayed", () => {
+    // The turn that errored was never the one that called the tool — it was
+    // the one after, replaying it.
+    const out = JSON.parse(
+      rewriteRoles(
+        JSON.stringify({
+          messages: [
+            { role: "user", content: "add a step" },
+            { role: "assistant", content: null, tool_calls: [toolCall] },
+            { role: "tool", tool_call_id: "c1", content: "ok" },
+          ],
+        })
+      )
+    );
+    expect(out.messages[1].reasoning_content).toBe("");
+  });
+
+  it("sends an empty string, never invented reasoning", () => {
+    const out = JSON.parse(
+      rewriteRoles(
+        JSON.stringify({
+          messages: [{ role: "assistant", content: null, tool_calls: [toolCall] }],
+        })
+      )
+    );
+    // Anything else would be fabricated model reasoning fed back as if real.
+    expect(out.messages[0].reasoning_content).toBe("");
+  });
+
+  it("keeps real reasoning when the client did retain it", () => {
+    const out = JSON.parse(
+      rewriteRoles(
+        JSON.stringify({
+          messages: [
+            {
+              role: "assistant",
+              content: null,
+              reasoning_content: "the workflow needs a step",
+              tool_calls: [toolCall],
+            },
+          ],
+        })
+      )
+    );
+    expect(out.messages[0].reasoning_content).toBe("the workflow needs a step");
+  });
+
+  it("leaves plain assistant messages alone", () => {
+    // Probing showed these replay fine, so touching them would be an
+    // unnecessary edit to a payload that already works.
+    const body = JSON.stringify({
+      messages: [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: "hello" },
+      ],
+    });
+    expect(rewriteRoles(body)).toBe(body);
+  });
+
+  it("leaves an assistant message with an empty tool_calls array alone", () => {
+    const body = JSON.stringify({
+      messages: [{ role: "assistant", content: "hello", tool_calls: [] }],
+    });
+    expect(rewriteRoles(body)).toBe(body);
+  });
+
+  it("does not add the field to tool or user messages", () => {
+    const out = JSON.parse(
+      rewriteRoles(
+        JSON.stringify({
+          messages: [
+            { role: "user", content: "hi", tool_calls: [toolCall] },
+            { role: "tool", tool_call_id: "c1", content: "ok" },
+          ],
+        })
+      )
+    );
+    expect(out.messages[0]).not.toHaveProperty("reasoning_content");
+    expect(out.messages[1]).not.toHaveProperty("reasoning_content");
+  });
+});

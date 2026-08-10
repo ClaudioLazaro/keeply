@@ -46,6 +46,36 @@ function downgradeToolChoice(value: unknown): "auto" | null {
   return null;
 }
 
+/**
+ * In thinking mode an assistant message that carries `tool_calls` must also
+ * carry `reasoning_content` when it is replayed. Omit it and the *next* turn
+ * fails, not the current one:
+ *
+ *     400 The `reasoning_content` in the thinking mode must be passed back
+ *
+ * CopilotKit stores assistant messages by role, content and tool calls; the
+ * reasoning stream has nowhere to live, so it is gone by the time the history
+ * is replayed. Probed to find the exact rule rather than guessing at it:
+ * plain assistant text replays fine, `""` is accepted, `null` is not, and only
+ * messages with `tool_calls` are checked at all.
+ *
+ * So the empty string is what gets sent. Not a plausible-looking placeholder:
+ * inventing reasoning the model never produced would put fabricated text into
+ * its own context, which is the same lie as showing a stub payload as live
+ * telemetry — smaller, and further from anyone's eyes, but the same kind.
+ */
+function repairReasoningContent(message: {
+  tool_calls?: unknown;
+  reasoning_content?: unknown;
+}): boolean {
+  if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
+    return false;
+  }
+  if (typeof message.reasoning_content === "string") return false;
+  message.reasoning_content = "";
+  return true;
+}
+
 function rewriteForCompatibility(body: string): string {
   let parsed: unknown;
   try {
@@ -62,13 +92,21 @@ function rewriteForCompatibility(body: string): string {
     return body;
   }
   const payload = parsed as {
-    messages: Array<{ role?: unknown }>;
+    messages: Array<{
+      role?: unknown;
+      tool_calls?: unknown;
+      reasoning_content?: unknown;
+    }>;
     tool_choice?: unknown;
   };
   let changed = false;
   for (const message of payload.messages) {
-    if (message?.role === OPENAI_ONLY_ROLE) {
+    if (!message) continue;
+    if (message.role === OPENAI_ONLY_ROLE) {
       message.role = UNIVERSAL_ROLE;
+      changed = true;
+    }
+    if (message.role === "assistant" && repairReasoningContent(message)) {
       changed = true;
     }
   }
