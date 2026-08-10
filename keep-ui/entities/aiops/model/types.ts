@@ -93,12 +93,6 @@ export interface AgentConfig {
   llm_provider: string | null;
   llm_model: string | null;
   llm_enabled: boolean;
-  llm_spend: {
-    usd: number;
-    priced_completions: number;
-    /** Non-zero means `usd` is an underestimate, not a cheap month. */
-    unpriced_completions: number;
-  };
   llm_api_key: LlmKeyStatus;
   budget_max_tool_calls: number;
   budget_max_wall_time_seconds: number;
