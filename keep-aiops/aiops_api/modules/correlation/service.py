@@ -501,6 +501,27 @@ def history_lookback_minutes(settings: dict[str, Any], window_minutes: float) ->
     return window_minutes * HISTORY_WINDOWS
 
 
+def claim_run(tenant_id: str, now=None) -> bool:
+    """Mark a run as started, or report that one is already under way.
+
+    The timestamp has to move *before* the work, not after. A pass reads
+    Keep's config, that read hits `/ai/stats`, and that endpoint reminds us
+    again — so reminders arrive throughout a run. Stamping the clock at the
+    end left every one of them comparing against the previous run's time,
+    all passing the gate, each starting another pass that generated more
+    reminders. It grew until it saturated both services.
+
+    One UPDATE, committed immediately, so a second caller sees it.
+    """
+    with session_scope() as session:
+        current = session.get(CorrelationClient, tenant_id)
+        if current is None:
+            return False
+        current.last_run_at = now or _utcnow()
+        session.add(current)
+    return True
+
+
 def run_for_client(client: CorrelationClient) -> dict[str, int]:
     """One analysis pass for one tenant. Never raises.
 
@@ -509,6 +530,9 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     once an operator accepts a proposal.
     """
     started = _utcnow()
+    # Claimed up front: everything below talks to Keep, and talking to Keep
+    # is what produces the next reminder.
+    claim_run(client.tenant_id, started)
     try:
         config = fetch_config(client)
     except KeepUnreachable as exc:
@@ -599,6 +623,9 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
     )
     stored = store_proposals(client, proposals, settings)
 
+    # Re-stamped on completion so the next window is measured from when
+    # this pass finished, not when it started — a slow pass should not be
+    # followed immediately by another.
     with session_scope() as session:
         current = session.get(CorrelationClient, client.tenant_id)
         if current is not None:

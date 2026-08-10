@@ -1149,3 +1149,35 @@ def test_a_reminder_that_is_due_still_runs():
         _run_safely("keep")
 
     assert len(ran) == 1
+
+
+def test_a_run_claims_the_clock_before_it_talks_to_keep():
+    """The stamp has to move before the work, not after.
+
+    A pass reads Keep's config; that read hits `/ai/stats`; that endpoint
+    reminds us again. Stamping on completion left every reminder that
+    arrived *during* a run comparing against the previous run's time, so
+    all of them passed the gate and each started another pass. Measured at
+    ~50 requests/second against a service that was already the bottleneck.
+    """
+    from aiops_api.modules.correlation import service as cs
+    from aiops_api.db import session_scope
+
+    with session_scope() as s:
+        s.add(cs.CorrelationClient(tenant_id="claimant", back_api_url="u", back_api_key="k"))
+
+    assert cs.claim_run("claimant") is True
+
+    from sqlmodel import Session
+    from aiops_api.db import get_engine
+    with Session(get_engine()) as s:
+        stamped = s.get(cs.CorrelationClient, "claimant")
+        assert stamped.last_run_at is not None
+        # And the gate now refuses, which is the whole point.
+        assert not cs.due_for_run(stamped, window_minutes=10.0)
+
+
+def test_claiming_an_unknown_tenant_reports_failure_rather_than_creating_one():
+    from aiops_api.modules.correlation import service as cs
+
+    assert cs.claim_run("nobody-registered-this") is False
