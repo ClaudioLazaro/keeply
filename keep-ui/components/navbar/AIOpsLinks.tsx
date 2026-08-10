@@ -4,12 +4,8 @@ import { Subtitle } from "@tremor/react";
 import { LinkWithIcon } from "components/LinkWithIcon";
 import { Disclosure } from "@headlessui/react";
 import { IoChevronUp } from "react-icons/io5";
-import { RiRobot2Line, RiShieldKeyholeLine } from "react-icons/ri";
-import {
-  MdOutlineSpaceDashboard,
-  MdOutlineHandyman,
-  MdOutlineSettings,
-} from "react-icons/md";
+import { RiRobot2Line } from "react-icons/ri";
+import { MdOutlineSpaceDashboard, MdOutlineHandyman } from "react-icons/md";
 import clsx from "clsx";
 import { useAiopsStats, useAiopsTools } from "@/entities/aiops/model/useAiops";
 
@@ -80,24 +76,6 @@ export const AIOpsLinks = () => {
             testId="aiops-tools"
           >
             <Subtitle className="text-xs">Tools</Subtitle>
-          </LinkWithIcon>
-        </li>
-        <li>
-          <LinkWithIcon
-            href="/settings?selectedTab=ai-policies"
-            icon={RiShieldKeyholeLine}
-            testId="aiops-policies"
-          >
-            <Subtitle className="text-xs">Policies</Subtitle>
-          </LinkWithIcon>
-        </li>
-        <li>
-          <LinkWithIcon
-            href="/settings?selectedTab=ai-agents"
-            icon={MdOutlineSettings}
-            testId="aiops-settings"
-          >
-            <Subtitle className="text-xs">Agent Settings</Subtitle>
           </LinkWithIcon>
         </li>
       </Disclosure.Panel>
