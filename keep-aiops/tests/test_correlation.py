@@ -1024,3 +1024,65 @@ def test_the_suggestion_stays_pending_when_the_credential_is_rejected(monkeypatc
 
     with Session(get_engine()) as s:
         assert s.get(cs.RuleSuggestion, sid).status == "pending"
+
+
+# --------------------------------------------------------------------------- #
+# Pacing: the reminder is a liveness signal, not a request to recompute
+# --------------------------------------------------------------------------- #
+
+
+def _client(last_run=None):
+    from aiops_api.modules.correlation.service import CorrelationClient
+
+    return CorrelationClient(
+        tenant_id="keep", back_api_url="u", back_api_key="k", last_run_at=last_run
+    )
+
+
+def test_the_first_reminder_always_runs():
+    from aiops_api.modules.correlation.service import due_for_run
+
+    assert due_for_run(_client(last_run=None), window_minutes=10.0)
+
+
+def test_a_reminder_inside_the_window_does_not_recompute():
+    # Keep pings us from GET /ai/stats and the UI polls it every few
+    # seconds. Measured: 392 reminders in 25 minutes, 909s of Keep's CPU
+    # spent answering the resulting /alerts reads, on a 1-core limit.
+    from datetime import timedelta
+
+    from aiops_api.modules.correlation.service import _utcnow, due_for_run
+
+    recent = _utcnow() - timedelta(seconds=30)
+    assert not due_for_run(_client(last_run=recent), window_minutes=10.0)
+
+
+def test_a_reminder_after_the_window_runs_again():
+    from datetime import timedelta
+
+    from aiops_api.modules.correlation.service import _utcnow, due_for_run
+
+    old = _utcnow() - timedelta(minutes=11)
+    assert due_for_run(_client(last_run=old), window_minutes=10.0)
+
+
+def test_a_tiny_window_cannot_turn_the_reminder_into_a_hot_loop():
+    # Grouping over 30 seconds is a legitimate setting; recomputing every
+    # 30 seconds because a browser tab is open is not.
+    from datetime import timedelta
+
+    from aiops_api.modules.correlation.service import _utcnow, due_for_run
+
+    recent = _utcnow() - timedelta(seconds=35)
+    assert not due_for_run(_client(last_run=recent), window_minutes=0.5)
+
+
+def test_a_naive_timestamp_does_not_crash_the_comparison():
+    # SQLite hands back naive datetimes; an aware/naive comparison raises,
+    # and this runs inside a background task where it would be swallowed.
+    from datetime import datetime, timedelta
+
+    from aiops_api.modules.correlation.service import due_for_run
+
+    naive = datetime.utcnow() - timedelta(minutes=30)
+    assert due_for_run(_client(last_run=naive), window_minutes=10.0) is True

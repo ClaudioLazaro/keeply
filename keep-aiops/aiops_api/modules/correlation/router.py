@@ -53,9 +53,21 @@ def remind_about_the_client(
 def _run_safely(tenant_id: str) -> None:
     try:
         for client in service.active_clients():
-            if client.tenant_id == tenant_id:
-                service.run_for_client(client)
+            if client.tenant_id != tenant_id:
+                continue
+            settings = service.settings_from_config(service.fetch_config(client))
+            window = settings["Correlation Window (minutes)"]
+            if not service.due_for_run(client, window):
+                # Not an error and not worth a warning: the reminder is a
+                # liveness signal from a UI poll, and re-deriving the same
+                # groups from the same alerts is pure cost.
+                logger.debug(
+                    "correlation reminder inside the last run's window, skipping",
+                    extra={"tenant_id": tenant_id},
+                )
                 return
+            service.run_for_client(client)
+            return
     except Exception:  # noqa: BLE001 — background task must never raise
         logger.exception("correlation run failed", extra={"tenant_id": tenant_id})
 

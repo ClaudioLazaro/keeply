@@ -71,6 +71,39 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 ALGORITHM_ID = "Keeply Alert Correlation_1"
 
 
+# Keep pings us from `GET /ai/stats`, and the UI polls that endpoint every
+# few seconds. Taken literally, that means a full correlation pass — read
+# the config, read up to 500 alerts back out of Keep, group them — several
+# times a minute, per open browser tab.
+#
+# Measured on a live instance: 392 reminders in 25 minutes drove 197
+# `GET /alerts` calls costing 909 seconds of Keep's CPU, against a 1-core
+# limit. The two services were starving each other over work whose answer
+# could not have changed.
+#
+# It cannot change, either: grouping is defined over a window of N minutes,
+# so re-running inside that window re-derives the same groups from the same
+# alerts. The reminder is a liveness signal, not a request to recompute.
+MIN_SECONDS_BETWEEN_RUNS = 60.0
+
+
+def due_for_run(client: CorrelationClient, window_minutes: float, now=None) -> bool:
+    """Whether enough has changed for another pass to mean anything.
+
+    Paced by the correlation window, because that is the resolution the
+    analysis actually has — with a floor so a tiny window cannot turn the
+    reminder back into a hot loop.
+    """
+    if client.last_run_at is None:
+        return True
+    now = now or _utcnow()
+    last = client.last_run_at
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    interval = max(window_minutes * 60.0, MIN_SECONDS_BETWEEN_RUNS)
+    return (now - last).total_seconds() >= interval
+
+
 def register_client(tenant_id: str, back_api_url: str, back_api_key: str) -> None:
     """Record (or refresh) a tenant Keep asked us to correlate for."""
     with session_scope() as session:
