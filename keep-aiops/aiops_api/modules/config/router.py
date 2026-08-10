@@ -339,7 +339,15 @@ def report_capability(
         body.downgrades,
         body.evidence,
     )
-    return {"recorded": stored is not None, "capability": stored}
+    rejected = (stored or {}).get("rejected") or []
+    return {
+        "recorded": stored is not None,
+        "capability": stored,
+        # Names this service does not recognise. Present so a client that
+        # implements a shim this version has never heard of finds out,
+        # instead of watching its report vanish.
+        "rejected": rejected,
+    }
 
 
 class LlmTestRequest(BaseModel):

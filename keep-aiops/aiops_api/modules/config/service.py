@@ -53,18 +53,39 @@ LITELLM_PROVIDERS = frozenset(
 )
 
 
+def canonical_model(model: str | None, provider: str | None) -> str | None:
+    """The model's own name, with any routing prefix removed.
+
+    **This is the canonical form**, and the only one this service hands out.
+
+    The prefix is not part of a model's name — it says where to send the
+    call, which ``provider`` already says. Keeping it inside ``model`` stores
+    the same fact twice, and the two copies then disagree: that is exactly
+    how a bare name reached LiteLLM and a prefixed one reached DeepSeek's
+    own endpoint, each rejected by the side it was wrong for.
+
+    So the prefix is stripped on the way out of storage and re-composed only
+    by the consumer that needs it. Every other consumer — the settings page,
+    the frontend assistants — gets a name it can use directly, and needs no
+    translation logic of its own.
+
+    Stripped only when the prefix is exactly this provider's own name.
+    Models legitimately contain slashes (``meta-llama/llama-3``), and
+    cutting at the first one would rename them into something that does not
+    exist.
+    """
+    if not model or not provider:
+        return model
+    prefix = f"{provider.lower()}/"
+    return model[len(prefix) :] if model.lower().startswith(prefix) else model
+
+
 def to_litellm_model(model: str | None, provider: str | None) -> str | None:
     """Model name in the form LiteLLM routes on.
 
-    The counterpart to the frontend's ``stripProviderPrefix``. The same
-    stored value serves two consumers that disagree about spelling: LiteLLM
-    needs ``provider/model`` to know where to send the call, while the
-    provider's own OpenAI-compatible endpoint rejects the prefix outright,
-    because there the host already answers that question.
-
-    Neither spelling is the "real" one, so neither is stored — each side
-    translates on the way out. Storing one and making the other cope is how
-    the field acquires a hidden convention that the next person gets wrong.
+    The single place a routing prefix is ever added, and the inverse of
+    :func:`canonical_model`. Only LiteLLM needs this spelling; nothing else
+    should call it.
     """
     if not model:
         return model
@@ -132,10 +153,13 @@ class EffectiveConfig:
                 return fallback
             return value
 
+        provider = pick("provider", self.llm_provider)
         return AssistantRouting(
             function=name,
-            provider=pick("provider", self.llm_provider),
-            model=pick("model", self.llm_model),
+            provider=provider,
+            # Canonical: whatever spelling is stored, callers get the
+            # model's own name. Only LiteLLM re-adds the prefix.
+            model=canonical_model(pick("model", self.llm_model), provider),
             # Thinking has no tenant-level default: `auto` means the system
             # works it out, which is the right answer when nobody has an
             # opinion.
@@ -210,7 +234,11 @@ def _build(row: AgentConfig | None, settings: Settings) -> EffectiveConfig:
     merged = (row or AgentConfig()).merged(settings)
     return EffectiveConfig(
         llm_provider=merged["llm_provider"],
-        llm_model=merged["llm_model"],
+        # Canonicalised here so it is true for every reader, including rows
+        # written before the prefix stopped being stored inside the name.
+        # A migration would fix the rows; this fixes the rows *and* anything
+        # an operator pastes tomorrow, in one place.
+        llm_model=canonical_model(merged["llm_model"], merged["llm_provider"]),
         llm_api_key_env=merged["llm_api_key_env"],
         budget_max_tool_calls=merged["budget_max_tool_calls"],
         budget_max_wall_time_seconds=merged["budget_max_wall_time_seconds"],

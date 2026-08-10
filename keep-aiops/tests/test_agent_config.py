@@ -531,20 +531,50 @@ def test_a_provider_litellm_does_not_know_is_not_invented_into_a_prefix(client):
     assert to_litellm_model("some-model", "openai_compatible") == "some-model"
 
 
-def test_the_two_translations_are_inverses(client):
-    # The frontend strips what this adds. If they ever disagree, one of the
-    # two consumers silently talks to the wrong model.
-    from aiops_api.modules.config import to_litellm_model
+def test_the_two_spellings_round_trip(client):
+    # Both directions live here now, in one language, so this actually
+    # exercises the pair instead of testing a copy of the other side.
+    from aiops_api.modules.config.service import canonical_model, to_litellm_model
 
-    stored = "deepseek-v4-flash"
-    for_litellm = to_litellm_model(stored, "deepseek")
-    # Mirror of stripProviderPrefix in keep-ui/shared/lib/server/modelName.ts
-    back = (
-        for_litellm[len("deepseek/") :]
-        if for_litellm.lower().startswith("deepseek/")
-        else for_litellm
+    assert canonical_model(to_litellm_model("deepseek-v4-flash", "deepseek"), "deepseek") == (
+        "deepseek-v4-flash"
     )
-    assert back == stored
+
+
+def test_a_stored_prefix_is_canonicalised_for_every_reader(client):
+    # Rows written before the prefix stopped being stored inside the name
+    # must still hand out a usable model — the frontend has no translation
+    # of its own any more.
+    client.put(
+        "/v1/config",
+        json={"llm_provider": "deepseek", "llm_model": "deepseek/deepseek-v4-flash"},
+    )
+
+    body = client.get("/v1/config").json()
+    assert body["llm_model"] == "deepseek-v4-flash"
+    builder = next(a for a in body["assistants"] if a["function"] == "workflow_builder")
+    assert builder["model"] == "deepseek-v4-flash"
+
+
+def test_canonicalising_leaves_a_real_slash_alone(client):
+    from aiops_api.modules.config.service import canonical_model
+
+    assert canonical_model("meta-llama/llama-3", "openrouter") == "meta-llama/llama-3"
+
+
+def test_litellm_still_gets_its_prefix_from_a_canonical_model(client):
+    from aiops_api.modules.config import get_effective_config, model_for
+    from aiops_api.settings import get_settings
+
+    client.put(
+        "/v1/config",
+        json={"llm_provider": "deepseek", "llm_model": "deepseek/deepseek-v4-flash"},
+    )
+    invalidate_cache()
+
+    assert model_for(get_effective_config("*"), "rca", get_settings()) == (
+        "deepseek/deepseek-v4-flash"
+    )
 
 
 def test_the_rca_function_can_use_a_different_model_from_the_builder(client):
@@ -570,3 +600,48 @@ def test_rca_falls_back_to_the_default_when_it_has_no_opinion(client):
     invalidate_cache()
 
     assert model_for(get_effective_config("*"), "rca", get_settings()) == "deepseek/deepseek-chat"
+
+
+def test_an_unknown_downgrade_name_is_reported_back_not_just_dropped(client):
+    # The client implements these; this service only validates them. If the
+    # two lists drift, the side that can act on it has to be told.
+    body = client.post(
+        "/v1/config/llm-capabilities",
+        json={"provider": "deepseek", "model": "m", "downgrades": ["tool_choice", "invented"]},
+    ).json()
+
+    assert body["rejected"] == ["invented"]
+    assert body["capability"]["downgrades"] == ["tool_choice"]
+
+
+def test_a_prefix_pasted_into_a_function_field_is_canonicalised_too(client):
+    # The tenant default is canonicalised on read, so this path only shows
+    # up when the operator types the prefixed name into the per-function
+    # field — which is exactly what someone copying from the default will
+    # do.
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-chat"})
+    client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"model": "deepseek/deepseek-reasoner"}}},
+    )
+
+    builder = _function(client, "workflow_builder")
+    # The frontend has no translation of its own; a prefix reaching it is a
+    # 400 from the provider.
+    assert builder["model"] == "deepseek-reasoner"
+
+
+def test_that_function_still_routes_correctly_through_litellm(client):
+    from aiops_api.modules.config import get_effective_config, model_for
+    from aiops_api.settings import get_settings
+
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-chat"})
+    client.put(
+        "/v1/config",
+        json={"assistants": {"rca": {"model": "deepseek/deepseek-reasoner"}}},
+    )
+    invalidate_cache()
+
+    assert model_for(get_effective_config("*"), "rca", get_settings()) == (
+        "deepseek/deepseek-reasoner"
+    )

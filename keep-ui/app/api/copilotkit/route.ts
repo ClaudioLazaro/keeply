@@ -12,12 +12,6 @@ import {
   type ResolvedAiProvider,
 } from "@/shared/lib/server/getAiProvider";
 
-const ASSISTANT_FUNCTIONS: AssistantFunction[] = [
-  "workflow_builder",
-  "incident_chat",
-  "ai_summary",
-  "rca",
-];
 import {
   openAiCompatFetch,
   type Downgrade,
@@ -61,15 +55,15 @@ export const POST = async (req: NextRequest) => {
   // OpenAI-compatible provider drive the assistant — DeepSeek, Gemini,
   // Grok, a local Ollama — not only api.openai.com.
   // Which AI feature is asking. Each call site declares itself, so the
-  // builder and the incident chat can run different models. An unknown or
-  // absent value falls back to the builder rather than erroring — a stale
-  // client should still get an assistant.
-  const requested = req.nextUrl.searchParams.get("fn");
-  const fn: AssistantFunction = ASSISTANT_FUNCTIONS.includes(
-    requested as AssistantFunction
-  )
-    ? (requested as AssistantFunction)
-    : "workflow_builder";
+  // builder and the incident chat can run different models.
+  //
+  // Not validated against a list here: the AI plane declares which
+  // functions exist, and a copy of that list on this side would be one
+  // more thing to keep in step. An unrecognised name simply matches no
+  // routing entry and falls through to the default — a stale client keeps
+  // working instead of losing its assistant to a validation error.
+  const fn = (req.nextUrl.searchParams.get("fn") ||
+    "workflow_builder") as AssistantFunction;
 
   const provider = await getAiProvider(fn);
 

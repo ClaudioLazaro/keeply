@@ -1,0 +1,155 @@
+---
+title: "ADR-0010: Roteamento de IA por Função e Aprendizado de Capacidade"
+description: "Cada funcionalidade de IA escolhe seu próprio modelo, e as incompatibilidades do provider são descobertas em vez de codificadas."
+---
+
+| Campo | Valor |
+|-------|-------|
+| **ADR** | 0010 |
+| **Status** | Aceito |
+| **Data** | 2026-08-10 |
+| **Substitui** | — |
+| **Relacionado** | [ADR-0007](/aiops/adr/0007-agent-framework-stack), [ADR-0008](/aiops/adr/0008-target-model-and-capability-binding) |
+
+## Contexto
+
+Quatro caminhos do produto chamam um LLM: o construtor de workflows, o chat
+de incidente, o resumo sob demanda e o escritor de RCA. Antes desta decisão
+eles se dividiam em dois regimes desconexos.
+
+O escritor de RCA lia `AgentConfig` — provider e modelo persistidos, por
+tenant, editáveis na UI. Os três do frontend escolhiam assim:
+
+```ts
+installed.find((item) => AI_TYPES.includes(item?.type))
+```
+
+O primeiro provider de IA que a API do Keep devolvesse. Instalar um segundo
+provider podia mover o construtor para outro modelo sem nenhum registro
+disso em lugar algum.
+
+Em paralelo, três incompatibilidades do DeepSeek em modo *thinking* foram
+descobertas **em produção, uma por vez, cada uma depois que a anterior foi
+corrigida**: a role `developer`, um `tool_choice` compelido, e uma chamada
+de ferramenta reenviada sem `reasoning_content`. Cada correção foi
+codificada como verdade universal aplicada sempre que houvesse `baseURL`
+customizada.
+
+Duas fraquezas, com a mesma forma: **o sistema decidia sozinho e não
+registrava por quê.**
+
+## Decisão
+
+### 1. Roteamento por função
+
+`AgentConfig` ganha uma coluna JSON `assistants`, com uma entrada por
+função:
+
+```json
+{"workflow_builder": {"provider": "deepseek",
+                      "model": "deepseek-chat",
+                      "thinking": "auto"}}
+```
+
+Campo ausente ou nulo herda o padrão do tenant, que por sua vez herda o env
+— a mesma regra de toda coluna dessa tabela, então um deployment que nunca
+abre a tela se comporta exatamente como antes.
+
+A resolução expõe **quais campos foram herdados**. Uma tela que mostra um
+fallback como escolha faz o operador acreditar que configurou algo que não
+tocou, e surpreende quem mudar o padrão depois.
+
+### 2. Rebaixamentos: com custo exige evidência
+
+Os três shims deixam de ser cegos, governados por uma única pergunta —
+**o remendo custa alguma coisa?**
+
+| Rebaixamento | Custo | Quando aplica |
+|---|---|---|
+| `developer` → `system` | nenhum: é tradução, e a role só existe na OpenAI | sempre |
+| `tool_choice` → `auto` | enfraquece: compelir vira oferecer | só após recusa |
+| `reasoning_content: ""` | adiciona campo não pedido | só após recusa |
+
+A forma forte vai primeiro. Só uma recusa que casa com as **palavras do
+próprio provider** justifica rebaixar e uma nova tentativa. Um 400 não
+reconhecido volta intacto: enfraquecer um pedido em silêncio para sumir com
+um erro inexplicado é como um sistema começa a mentir sobre o que fez.
+
+### 3. Aprendido ≠ escolhido
+
+O que se aprende vai para `llm_capability`, **tabela separada**, chaveada
+por `(tenant, provider, modelo)`, com o erro verbatim do provider como
+causa. Nunca é escrito de volta em `AgentConfig`.
+
+São dois tipos de fato diferentes. Fundi-los faria a UI apresentar como
+decisão do operador algo que a máquina deduziu — a mesma falha que a
+disciplina de proveniência existe para evitar no lado da evidência. Um
+rebaixamento sem causa registrada é indistinguível de um bug.
+
+O override explícito do operador (`on`/`off`) sempre vence. O aprendizado
+só preenche `auto`.
+
+### 4. Nome de modelo tem uma forma canônica
+
+O prefixo de roteamento (`deepseek/`) **não faz parte do nome do modelo** —
+ele diz para onde mandar a chamada, que é o que o campo `provider` já diz.
+Guardá-lo dentro de `model` armazena o mesmo fato duas vezes, e as duas
+cópias divergem.
+
+Foi o que aconteceu: um nome puro chegou ao LiteLLM e um prefixado chegou
+ao endpoint da DeepSeek, cada um rejeitado pelo lado para o qual estava
+errado.
+
+**Canônico é o nome puro.** O serviço só entrega essa forma. Um único
+consumidor — o LiteLLM — recompõe o prefixo na saída. Nenhum outro
+consumidor traduz nada, e em particular o frontend não tem lógica de nome de
+modelo.
+
+## Consequências
+
+**Boas**
+
+- Redigir workflow e escrever RCA não dividem mais modelo, custo nem
+  latência.
+- Uma incompatibilidade nova de vendor é descoberta e memorizada em vez de
+  virar mais um commit de emergência.
+- A tela distingue o que foi escolhido do que foi deduzido, e mostra a
+  causa.
+- Zero tradução de nome de modelo em TypeScript: a regra existe uma vez, em
+  Python.
+
+**Custos, declarados**
+
+- Uma requisição a mais na primeira vez que um modelo é usado, enquanto ele
+  ainda não ensinou nada. Limitada, persistida, e some depois.
+- Em `auto`, uma sugestão pode voltar vazia em vez de erro quando
+  `tool_choice` é rebaixado. Vazio é a falha melhor — o chat continua
+  utilizável.
+- O plano de IA vira dependência de configuração do frontend. Mitigado com
+  cache por função e degradação para o comportamento anterior: um serviço de
+  *configuração* fora do ar não pode tirar o assistente do ar.
+
+**Duplicação que permanece, deliberadamente**
+
+Os nomes dos rebaixamentos existem nos dois lados: o TypeScript os
+**implementa**, o Python **valida** o que pode ser persistido. Um validador
+que confia na entrada não é um validador, então a duplicação fica. O que não
+pode ficar é a divergência silenciosa — por isso o endpoint devolve os nomes
+que recusou, para o lado que os implementa descobrir que este serviço está
+atrás.
+
+## Alternativas descartadas
+
+**Um ajuste global de IA.** Muito mais simples, e força o modelo caro no
+trabalho barato ou o fraco no trabalho que importa.
+
+**Seletor manual de thinking, sem detecção.** Previsível, mas o valor certo
+depende do modelo, que muda sem aviso do vendor — e devolve ao operador uma
+pergunta que ele não tem como responder.
+
+**Só detecção, sem override.** Menos superfície de UI, nenhuma saída quando
+a heurística erra.
+
+**Gravar o rebaixamento detectado dentro de `AgentConfig`.** Uma tabela a
+menos, ao preço de o produto afirmar que o operador pediu algo que ele nunca
+pediu.

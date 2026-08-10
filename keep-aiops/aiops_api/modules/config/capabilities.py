@@ -39,6 +39,17 @@ logger = logging.getLogger(__name__)
 # The downgrades a client may report. Closed on purpose: an unknown name
 # would be stored, shown in the UI as an applied workaround, and mean
 # nothing to anyone reading it.
+#
+# **The implementation is the source of truth, and it is not here.** These
+# shims live in `keep-ui/shared/lib/server/openAiCompatFetch.ts`
+# (`ALL_DOWNGRADES`); this list only decides what may be persisted. The
+# duplication is deliberate — a validator that trusts its input is not a
+# validator — but the drift it invites is not: adding a shim on the client
+# without adding its name here silently drops the record.
+#
+# So drift is reported rather than merely logged. `record()` returns the
+# names it refused, and the API hands them back to the caller, which is the
+# one party in a position to notice.
 KNOWN_DOWNGRADES: tuple[str, ...] = (
     # `developer` role rejected — send `system`.
     "developer_role",
@@ -101,10 +112,11 @@ def record(
         return None
 
     accepted = [name for name in downgrades if name in KNOWN_DOWNGRADES]
-    if len(accepted) != len(downgrades):
-        logger.info(
-            "ignored unrecognised downgrade names",
-            extra={"unknown": sorted(set(downgrades) - set(KNOWN_DOWNGRADES))},
+    rejected = sorted(set(downgrades) - set(KNOWN_DOWNGRADES))
+    if rejected:
+        logger.warning(
+            "refused unrecognised downgrade names; this list is behind the client",
+            extra={"unknown": rejected},
         )
 
     try:
@@ -138,6 +150,9 @@ def record(
                 "model": row.model,
                 "downgrades": list(row.downgrades or []),
                 "evidence": row.evidence,
+                # Handed back so the caller — which implements these — can
+                # see that this service does not know about one of them.
+                "rejected": rejected,
             }
     except Exception:  # noqa: BLE001 — learning is an optimisation, not a dependency
         logger.warning("could not record model capability", exc_info=True)
