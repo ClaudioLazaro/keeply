@@ -1,6 +1,7 @@
 // server only!
 import { auth } from "@/auth";
 import { getApiURL } from "@/utils/apiUrl";
+import { stripProviderPrefix } from "./modelName";
 
 /**
  * Resolve the AI credential Keep's built-in assistants should use.
@@ -225,8 +226,13 @@ export async function getAiProvider(
         thinking: routing.thinking ?? "auto",
         knownDowngrades: routing.knownDowngrades ?? [],
         // An env-configured model is still overridable per function; that
-        // is the whole point of the setting existing.
-        model: routing.model || resolved.model,
+        // is the whole point of the setting existing. Normalised on the
+        // way in, because the AI plane names models for LiteLLM and this
+        // side talks to the provider directly.
+        model: stripProviderPrefix(
+          routing.model || resolved.model,
+          resolved.providerType
+        ),
       }
     : null;
 
