@@ -52,11 +52,11 @@ spec:
               mountPath: /var/lib/postgresql/data
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
               cpu: 500m
-              memory: 512Mi
+              memory: 1Gi
+            limits:
+              cpu: 4
+              memory: 4Gi
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -104,8 +104,14 @@ spec:
             - containerPort: 6001
           resources:
             requests:
-              cpu: 50m
-              memory: 64Mi
+              cpu: 100m
+              memory: 128Mi
+            # Bounded on purpose. It had no limit at all, which is not
+            # "generous" — it means one runaway websocket process can take
+            # the node's memory from everything else on it.
+            limits:
+              cpu: 1
+              memory: 1Gi
 ---
 # keep-backend (the upstream keep API) with the outbox spike wired in.
 # Uses the keep-api:m0 image (already imported via k3d image import) with
@@ -243,8 +249,8 @@ spec:
             failureThreshold: 6
           resources:
             requests:
-              cpu: 200m
-              memory: 512Mi
+              cpu: 1
+              memory: 1Gi
             limits:
-              cpu: 1000m
-              memory: 1.5Gi
+              cpu: 6
+              memory: 6Gi
