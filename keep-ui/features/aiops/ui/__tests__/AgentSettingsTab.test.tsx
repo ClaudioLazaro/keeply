@@ -20,6 +20,7 @@ const CONFIG: AgentConfig = {
       function: "workflow_builder",
       purpose: "Drafts and edits workflows in the builder chat",
       provider: "deepseek",
+      provider_id: null,
       model: "deepseek/deepseek-v4-pro",
       thinking: "auto",
       // Nothing set for this feature yet — every field fell through.

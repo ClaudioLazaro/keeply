@@ -116,6 +116,11 @@ const providerNameFieldConfig: ProviderAuthConfig = {
   default: null,
 };
 
+import {
+  DEFAULT_ERROR_TITLE,
+  describeInstallError,
+} from "./install-errors";
+
 const ProviderForm = ({
   provider,
   onConnectChange,
@@ -131,6 +136,12 @@ const ProviderForm = ({
     getInitialFormValues(provider)
   );
   const [formErrors, setFormErrors] = useState<string | null>(null);
+  // The heading is part of the message. A name clash reported under
+  // "Connection Problem" reads as a bad credential, which is how an
+  // operator ends up retrying an install that already succeeded.
+  const [formErrorTitle, setFormErrorTitle] = useState<string>(
+    DEFAULT_ERROR_TITLE
+  );
   const [inputErrors, setInputErrors] = useState<ProviderInputErrors>({});
   // Related to scopes
   const [providerValidatedScopes, setProviderValidatedScopes] = useState<{
@@ -350,7 +361,12 @@ const ProviderForm = ({
   }
 
   async function handleSubmitError(apiError: unknown) {
+    // Every path below sets its own heading; reset so a previous, more
+    // specific one does not survive onto an unrelated failure.
+    setFormErrorTitle(DEFAULT_ERROR_TITLE);
+
     if (apiError instanceof KeepApiReadOnlyError) {
+      setFormErrorTitle("Read-only mode");
       setFormErrors("You're in read-only mode");
       return;
     }
@@ -359,12 +375,16 @@ const ProviderForm = ({
     const status = apiError.statusCode;
     const error =
       "detail" in data ? data.detail : "message" in data ? data.message : data;
-    if (status === 409) {
-      setFormErrors(
-        `Provider with name ${formValues.provider_name} already exists`
-      );
+    const described = describeInstallError(
+      status,
+      String(formValues.provider_name ?? "")
+    );
+    if (described) {
+      setFormErrorTitle(described.title);
+      setFormErrors(described.message);
     } else if (status === 412) {
       setProviderValidatedScopes(error);
+      setFormErrorTitle("Missing permissions");
       setFormErrors(
         `${provider.type} scopes are invalid: ${JSON.stringify(error, null, 4)}`
       );
@@ -813,7 +833,7 @@ const ProviderForm = ({
 
         {formErrors && (
           <Callout
-            title="Connection Problem"
+            title={formErrorTitle}
             icon={ExclamationCircleIcon}
             className="my-5"
             color="rose"

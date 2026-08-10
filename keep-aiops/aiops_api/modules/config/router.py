@@ -88,18 +88,18 @@ class AgentConfigUpdate(BaseModel):
         for name, entry in value.items():
             if not isinstance(entry, dict):
                 raise ValueError(f"assistants.{name} must be an object")
-            extra = sorted(set(entry) - {"provider", "model", "thinking"})
+            extra = sorted(set(entry) - {"provider", "provider_id", "model", "thinking"})
             if extra:
                 raise ValueError(
                     f"assistants.{name}: unexpected fields {extra}; "
-                    "valid: ['model', 'provider', 'thinking']"
+                    "valid: ['model', 'provider', 'provider_id', 'thinking']"
                 )
             thinking = entry.get("thinking")
             if thinking not in (None, "", *THINKING_MODES):
                 raise ValueError(
                     f"assistants.{name}.thinking must be one of {list(THINKING_MODES)}"
                 )
-            for key in ("provider", "model"):
+            for key in ("provider", "provider_id", "model"):
                 candidate = entry.get(key)
                 if candidate is not None and not isinstance(candidate, str):
                     raise ValueError(f"assistants.{name}.{key} must be a string")
@@ -108,7 +108,14 @@ class AgentConfigUpdate(BaseModel):
                 if isinstance(candidate, str) and SECRET_LOOKING.match(candidate):
                     raise ValueError(f"assistants.{name}.{key} looks like a credential")
             cleaned[name] = {
+                # `provider` is the type, which is what LiteLLM prefixes
+                # with. `provider_id` names the specific installation, which
+                # is the only way to tell two accounts of the same type
+                # apart — a real configuration, not a hypothetical: an
+                # operator running a cheap and an expensive DeepSeek key
+                # sees two rows of type `deepseek`.
                 "provider": (entry.get("provider") or None),
+                "provider_id": (entry.get("provider_id") or None),
                 "model": (entry.get("model") or None),
                 "thinking": thinking or "auto",
             }
@@ -173,6 +180,7 @@ class AssistantView(BaseModel):
     function: str
     purpose: str
     provider: str | None
+    provider_id: str | None
     model: str | None
     thinking: str
     inherited: list[str]
@@ -222,6 +230,7 @@ def _assistant_views(tenant_id: str, config) -> list[AssistantView]:
                 function=name,
                 purpose=purpose,
                 provider=routing.provider,
+                provider_id=routing.provider_id,
                 model=routing.model,
                 thinking=routing.thinking,
                 inherited=routing.inherited,

@@ -1,6 +1,10 @@
 // server only!
 import { auth } from "@/auth";
 import { getApiURL } from "@/utils/apiUrl";
+import {
+  credentialOf,
+  selectAiProvider,
+} from "./selectAiProvider";
 
 /**
  * Resolve the AI credential Keep's built-in assistants should use.
@@ -45,6 +49,7 @@ export type ThinkingMode = "auto" | "on" | "off";
 
 interface AssistantRouting {
   provider?: string;
+  providerId?: string;
   model?: string;
   thinking?: ThinkingMode;
   knownDowngrades?: string[];
@@ -143,6 +148,7 @@ async function assistantRouting(
     if (!entry) return {};
     return {
       provider: entry.provider || undefined,
+      providerId: entry.provider_id || undefined,
       model: entry.model || undefined,
       thinking: entry.thinking || "auto",
       knownDowngrades: Array.isArray(entry.detected_downgrades)
@@ -170,33 +176,31 @@ async function fromKeepProvider(
 
     const payload = await response.json();
     const installed: any[] = payload?.installed_providers ?? [];
-    const candidates = installed.filter((item) => AI_TYPES.includes(item?.type));
 
-    // The configured provider for this function wins. Without this the
-    // choice was `candidates[0]` — whichever the API happened to return
-    // first — so installing a second AI provider could silently move the
-    // workflow builder onto a different model and nobody would know why
-    // the answers changed.
-    const provider =
-      (routing.provider &&
-        candidates.find((item) => item?.type === routing.provider)) ||
-      candidates[0];
-    if (!provider) return null;
+    // Selection lives in its own module so it can be tested without the
+    // auth stack — see selectAiProvider for why each rule is there.
+    const provider = selectAiProvider(installed, AI_TYPES, {
+      provider: routing.provider,
+      providerId: routing.providerId,
+    });
+    // Selection already required a usable credential, so a provider here
+    // is one we can authenticate as. `type` is likewise guaranteed — it is
+    // what made it a candidate.
+    if (!provider?.type) return null;
+    const type = provider.type;
 
-    const auth_ = provider?.details?.authentication ?? {};
-    const apiKey: string = auth_.api_key || auth_.token || auth_.access_token || "";
-    if (!apiKey) return null;
+    const auth_ = provider.details?.authentication ?? {};
 
     return {
-      apiKey,
+      apiKey: credentialOf(provider),
       // The provider's own endpoint wins — that is how a self-hosted or
       // unlisted vendor works without adding code for it.
-      baseURL: normalizeBaseUrl(auth_.api_url || auth_.host) ?? BASE_URLS[provider.type],
+      baseURL: normalizeBaseUrl(auth_.api_url || auth_.host) ?? BASE_URLS[type],
       // This function's own model wins, then the provider integration's,
       // then a sane default so the assistant works right after install.
-      model: routing.model || auth_.model || DEFAULT_MODELS[provider.type],
+      model: routing.model || auth_.model || DEFAULT_MODELS[type],
       source: "keep-provider",
-      providerType: provider.type,
+      providerType: type,
       providerId: provider.id,
     };
   } catch {

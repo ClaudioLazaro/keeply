@@ -103,6 +103,8 @@ export interface AssistantView {
   function: string;
   purpose: string;
   provider: string | null;
+  /** The specific installation, when several of one type are installed. */
+  provider_id: string | null;
   model: string | null;
   thinking: ThinkingMode;
   /** Field names that came from a default rather than this function. */
@@ -115,6 +117,7 @@ export interface AssistantView {
 
 export interface AssistantUpdate {
   provider?: string | null;
+  provider_id?: string | null;
   model?: string | null;
   thinking?: ThinkingMode;
 }

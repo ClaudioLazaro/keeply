@@ -41,6 +41,25 @@ const DOWNGRADE_LABEL: Record<string, string> = {
   reasoning_content: "Adds the empty reasoning field this model requires when replaying a tool call",
 };
 
+/**
+ * What picking a provider in the dropdown means for the stored routing.
+ *
+ * Both fields move together: the id selects *which account*, the type is
+ * what LiteLLM prefixes the model with. Saving one without the other
+ * leaves the routing half-resolved, which is why this is one function
+ * rather than two `set` calls at the call site.
+ */
+export function providerSelection(
+  providerId: string,
+  providers: LlmProvider[]
+): AssistantUpdate {
+  const picked = providers.find((item) => item.id === providerId);
+  return {
+    provider_id: providerId || null,
+    provider: picked?.type ?? null,
+  };
+}
+
 function inheritedHint(view: AssistantView, field: string): string | undefined {
   return view.inherited.includes(field)
     ? "Using the default below — not set for this feature."
@@ -63,7 +82,14 @@ function AssistantCard({
   const [draft, setDraft] = useState<AssistantUpdate>({});
   const dirty = Object.keys(draft).length > 0;
 
-  const provider = draft.provider ?? view.provider ?? "";
+  // The select is keyed by installation id, because two accounts of one
+  // vendor are indistinguishable by type — which is the whole reason the
+  // id exists. The type is saved alongside it: LiteLLM prefixes with it.
+  const providerId =
+    draft.provider_id ??
+    view.provider_id ??
+    providers.find((item) => item.type === view.provider)?.id ??
+    "";
   const model = draft.model ?? view.model ?? "";
   const thinking = draft.thinking ?? view.thinking;
 
@@ -91,12 +117,17 @@ function AssistantCard({
             Provider
           </span>
           <Select
-            value={provider}
-            onValueChange={(next) => set("provider", next || null)}
+            value={providerId}
+            onValueChange={(next) =>
+              setDraft((current) => ({
+                ...current,
+                ...providerSelection(next, providers),
+              }))
+            }
             enableClear
           >
             {providers.map((item) => (
-              <SelectItem key={item.type} value={item.type}>
+              <SelectItem key={item.id} value={item.id}>
                 {item.label}
                 {item.configured ? "" : " — no credential"}
               </SelectItem>

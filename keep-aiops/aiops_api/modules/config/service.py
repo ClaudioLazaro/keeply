@@ -104,6 +104,8 @@ class AssistantRouting:
 
     function: str
     provider: str | None
+    #: The specific installation, when two of the same type exist.
+    provider_id: str | None
     model: str | None
     thinking: str
     #: Fields that fell through to a default rather than being chosen here.
@@ -157,6 +159,9 @@ class EffectiveConfig:
         return AssistantRouting(
             function=name,
             provider=provider,
+            # No tenant-level default: an id identifies one installation,
+            # so inheriting one across functions would be meaningless.
+            provider_id=override.get("provider_id") or None,
             # Canonical: whatever spelling is stored, callers get the
             # model's own name. Only LiteLLM re-adds the prefix.
             model=canonical_model(pick("model", self.llm_model), provider),
