@@ -1161,10 +1161,10 @@ def test_a_run_claims_the_clock_before_it_talks_to_keep():
     ~50 requests/second against a service that was already the bottleneck.
     """
     from aiops_api.modules.correlation import service as cs
-    from aiops_api.db import session_scope
 
-    with session_scope() as s:
-        s.add(cs.CorrelationClient(tenant_id="claimant", back_api_url="u", back_api_key="k"))
+    # Upsert: the suite shares a database, and inserting directly made this
+    # pass alone and fail in a full run.
+    cs.register_client(tenant_id="claimant", back_api_url="u", back_api_key="k")
 
     assert cs.claim_run("claimant") is True
 
