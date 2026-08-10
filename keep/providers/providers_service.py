@@ -435,7 +435,20 @@ class ProvidersService:
         provider = ProvidersFactory.get_provider(
             context_manager, provider_id, provider_type, provider_config
         )
-        api_url = config("KEEP_API_URL")
+        # How the outside world reaches Keep, which is not the same question
+        # as how Keep reaches itself.
+        #
+        # `KEEP_API_URL` is the second one, and in a cluster it is properly a
+        # service address — `http://keep-backend:8080`. Handing that to a
+        # vendor as a callback registers a URL they cannot resolve. A Datadog
+        # webhook installed this way simply never existed, and the account
+        # ingested nothing for five hours while the UI showed a healthy
+        # provider with validated scopes.
+        #
+        # `KEEP_PUBLIC_API_URL` is the address a third party can actually
+        # reach. It falls back to `KEEP_API_URL`, so a deployment where the
+        # two are the same needs no configuration and behaves as before.
+        api_url = config("KEEP_PUBLIC_API_URL", default=None) or config("KEEP_API_URL")
         keep_webhook_api_url = (
             f"{api_url}/alerts/event/{provider_type}?provider_id={provider_id}"
         )

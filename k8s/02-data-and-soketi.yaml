@@ -192,6 +192,27 @@ spec:
             # plugin cannot call back on.
             - name: KEEP_API_URL
               value: "http://keep-backend:8080"
+            # The address a vendor can actually reach, used only for
+            # callbacks a third party has to register. Kept separate from
+            # KEEP_API_URL so internal callers — the AI plane's back_api_url
+            # among them — keep using the service network instead of going
+            # out and back through the internet.
+            - name: KEEP_PUBLIC_API_URL
+              value: "https://keeply.clazar.net/keepapi"
+            # Backstop for the webhook, not a replacement — and a costly
+            # one, so it runs rarely.
+            #
+            # The pull is not incremental: it re-reads Datadog's event
+            # window every time. Measured on this account, one pull added
+            # 5334 alert rows for 260 distinct fingerprints and grew the
+            # database from 89MB to 150MB. At the 15 minutes this was first
+            # set to, that is roughly 6GB a day of duplicates.
+            #
+            # Daily keeps it useful as a gap-filler after a webhook outage
+            # without the storage cost. Real-time delivery is the webhook's
+            # job.
+            - name: KEEP_PULL_INTERVAL
+              value: "1440"
             # Keep's native username/password identity manager. It adds the
             # /signin endpoint and makes every other route require a bearer
             # token. keep-frontend must carry the same value.
