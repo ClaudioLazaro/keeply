@@ -55,9 +55,17 @@ def _run_safely(tenant_id: str) -> None:
         for client in service.active_clients():
             if client.tenant_id != tenant_id:
                 continue
-            settings = service.settings_from_config(service.fetch_config(client))
-            window = settings["Correlation Window (minutes)"]
-            if not service.due_for_run(client, window):
+            # Gate BEFORE reading anything. `fetch_config` calls Keep's
+            # `/ai/stats`, and that endpoint calls `remind_about_the_client`
+            # — which lands back here. Reading the config to decide whether
+            # to run is therefore a recursive loop, and it ran at ~50
+            # requests/second until it was caught.
+            #
+            # So the cheap floor is checked with no I/O at all. The full
+            # window-based pacing still applies inside run_for_client's own
+            # path, where the config has been read for other reasons
+            # anyway.
+            if not service.due_for_run(client, window_minutes=0.0):
                 # Not an error and not worth a warning: the reminder is a
                 # liveness signal from a UI poll, and re-deriving the same
                 # groups from the same alerts is pure cost.

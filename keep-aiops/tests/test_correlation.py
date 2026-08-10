@@ -1086,3 +1086,66 @@ def test_a_naive_timestamp_does_not_crash_the_comparison():
 
     naive = datetime.utcnow() - timedelta(minutes=30)
     assert due_for_run(_client(last_run=naive), window_minutes=10.0) is True
+
+
+def test_a_reminder_that_is_not_due_reads_nothing_at_all():
+    """The gate must come before any I/O, not after.
+
+    `fetch_config` calls Keep's `/ai/stats`, and that endpoint calls
+    `remind_about_the_client`, which lands back in this path. Reading the
+    config in order to decide whether to run is therefore a recursive loop.
+    It reached ~50 requests/second on a live instance before it was caught,
+    and no test failed — because every test called the service directly and
+    none exercised the reminder path's ordering.
+    """
+    from datetime import timedelta
+
+    from fastapi import BackgroundTasks
+
+    from aiops_api.modules.correlation.router import _run_safely
+    from aiops_api.modules.correlation import service as cs
+
+    calls = {"config": 0, "run": 0}
+
+    def _explode(*_a, **_kw):
+        calls["config"] += 1
+        raise AssertionError("fetch_config must not run before the gate")
+
+    client = cs.CorrelationClient(
+        tenant_id="keep",
+        back_api_url="u",
+        back_api_key="k",
+        last_run_at=cs._utcnow() - timedelta(seconds=5),
+    )
+
+    import unittest.mock as mock
+
+    with mock.patch.object(cs, "active_clients", lambda: [client]), \
+         mock.patch.object(cs, "fetch_config", _explode), \
+         mock.patch.object(cs, "run_for_client", lambda c: calls.__setitem__("run", 1)):
+        _run_safely("keep")
+
+    assert calls == {"config": 0, "run": 0}
+
+
+def test_a_reminder_that_is_due_still_runs():
+    from datetime import timedelta
+
+    from aiops_api.modules.correlation.router import _run_safely
+    from aiops_api.modules.correlation import service as cs
+
+    ran = []
+    client = cs.CorrelationClient(
+        tenant_id="keep",
+        back_api_url="u",
+        back_api_key="k",
+        last_run_at=cs._utcnow() - timedelta(minutes=30),
+    )
+
+    import unittest.mock as mock
+
+    with mock.patch.object(cs, "active_clients", lambda: [client]), \
+         mock.patch.object(cs, "run_for_client", lambda c: ran.append(c)):
+        _run_safely("keep")
+
+    assert len(ran) == 1

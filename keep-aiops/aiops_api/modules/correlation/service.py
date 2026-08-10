@@ -530,6 +530,16 @@ def run_for_client(client: CorrelationClient) -> dict[str, int]:
 
     settings = settings_from_config(config)
 
+    # Full pacing, applied here because the config is already in hand. The
+    # caller only checked the cheap floor: reading the config to decide
+    # whether to run would call Keep's /ai/stats, which reminds us again.
+    if not due_for_run(client, settings["Correlation Window (minutes)"]):
+        logger.debug(
+            "inside the previous run's window, nothing to recompute",
+            extra={"tenant_id": client.tenant_id},
+        )
+        return {"groups": 0, "proposed": 0}
+
     if not settings.get("Enabled"):
         logger.info(
             "correlation analysis disabled for tenant, skipping",
