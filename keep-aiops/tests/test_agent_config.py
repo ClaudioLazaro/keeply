@@ -275,3 +275,222 @@ def test_validation_errors_stay_json_serialisable(client):
 
     assert response.status_code == 422
     assert "unknown severities" in response.json()["detail"][0]["msg"]
+
+
+# --------------------------------------------------------------------------- #
+# Per-function assistant routing
+# --------------------------------------------------------------------------- #
+
+
+def test_every_declared_function_is_listed_even_when_unconfigured(client):
+    # A feature that routes to an LLM but was never touched is exactly the
+    # one an operator needs to find. Building the list from stored keys
+    # would hide it.
+    body = client.get("/v1/config").json()
+
+    functions = {item["function"] for item in body["assistants"]}
+    assert functions == {"workflow_builder", "incident_chat", "ai_summary", "rca"}
+    for item in body["assistants"]:
+        assert item["purpose"]
+
+
+def test_unconfigured_function_inherits_the_tenant_default(client):
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-chat"})
+
+    builder = _function(client, "workflow_builder")
+
+    assert builder["provider"] == "deepseek"
+    assert builder["model"] == "deepseek-chat"
+    # And says so, rather than presenting the fallback as a choice.
+    assert builder["inherited"] == ["model", "provider"]
+
+
+def test_a_function_can_use_a_different_model_from_the_default(client):
+    # The point of the whole feature: a cheap model drafting workflows, a
+    # strong one writing the RCA.
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-reasoner"})
+    client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"model": "deepseek-chat"}}},
+    )
+
+    assert _function(client, "workflow_builder")["model"] == "deepseek-chat"
+    assert _function(client, "rca")["model"] == "deepseek-reasoner"
+    # Provider still falls through — only the model was overridden.
+    assert _function(client, "workflow_builder")["provider"] == "deepseek"
+    assert "provider" in _function(client, "workflow_builder")["inherited"]
+
+
+def test_saving_one_function_does_not_wipe_another(client):
+    # The settings page saves a card at a time; a wholesale assignment
+    # would silently drop everything the form did not include.
+    client.put("/v1/config", json={"assistants": {"workflow_builder": {"model": "a"}}})
+    client.put("/v1/config", json={"assistants": {"incident_chat": {"model": "b"}}})
+
+    assert _function(client, "workflow_builder")["model"] == "a"
+    assert _function(client, "incident_chat")["model"] == "b"
+
+
+def test_thinking_defaults_to_auto(client):
+    assert _function(client, "workflow_builder")["thinking"] == "auto"
+
+
+def test_unknown_function_is_rejected_rather_than_stored(client):
+    # Stored, it would render as a configured feature and route nothing —
+    # the operator would believe the builder was pointed somewhere it isn't.
+    response = client.put("/v1/config", json={"assistants": {"workflow_bulider": {"model": "x"}}})
+
+    assert response.status_code == 422
+    assert "workflow_bulider" in response.text
+
+
+def test_unknown_thinking_mode_is_rejected(client):
+    response = client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"thinking": "maybe"}}},
+    )
+
+    assert response.status_code == 422
+
+
+def test_unexpected_field_inside_a_function_is_rejected(client):
+    response = client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"temperature": 0.5}}},
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_credential_pasted_as_a_model_is_rejected(client):
+    response = client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"model": "sk-abcdef123456"}}},
+    )
+
+    assert response.status_code == 422
+    assert "sk-abcdef123456" not in response.text
+
+
+# --------------------------------------------------------------------------- #
+# Learned capabilities
+# --------------------------------------------------------------------------- #
+
+
+def test_nothing_is_known_before_a_model_has_been_tried(client):
+    body = client.get("/v1/config/llm-capabilities").json()
+
+    assert body["capabilities"] == []
+    assert "tool_choice" in body["known_downgrades"]
+
+
+def test_a_reported_downgrade_is_stored_with_its_cause(client):
+    client.post(
+        "/v1/config/llm-capabilities",
+        json={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "downgrades": ["tool_choice"],
+            "evidence": "400 Thinking mode does not support this tool_choice",
+        },
+    )
+
+    stored = client.get("/v1/config/llm-capabilities").json()["capabilities"]
+    assert len(stored) == 1
+    assert stored[0]["downgrades"] == ["tool_choice"]
+    # A downgrade with no cause on record is indistinguishable from a bug.
+    assert "Thinking mode" in stored[0]["evidence"]
+
+
+def test_downgrades_accumulate_as_a_model_reveals_them(client):
+    # Which is how this was actually found: one 400 at a time, each after
+    # the previous fix shipped.
+    for name, evidence in (
+        ("tool_choice", "400 Thinking mode does not support this tool_choice"),
+        ("reasoning_content", "400 The reasoning_content must be passed back"),
+    ):
+        client.post(
+            "/v1/config/llm-capabilities",
+            json={"provider": "deepseek", "model": "m", "downgrades": [name], "evidence": evidence},
+        )
+
+    stored = client.get("/v1/config/llm-capabilities").json()["capabilities"]
+    assert stored[0]["downgrades"] == ["reasoning_content", "tool_choice"]
+
+
+def test_an_unrecognised_downgrade_name_is_dropped(client):
+    # Stored, it would show in the UI as an applied workaround and mean
+    # nothing to whoever reads it.
+    client.post(
+        "/v1/config/llm-capabilities",
+        json={"provider": "deepseek", "model": "m", "downgrades": ["tool_choice", "invented"]},
+    )
+
+    stored = client.get("/v1/config/llm-capabilities").json()["capabilities"]
+    assert stored[0]["downgrades"] == ["tool_choice"]
+
+
+def test_a_model_that_accepted_everything_is_distinguishable_from_untried(client):
+    client.post("/v1/config/llm-capabilities", json={"model": "strong", "downgrades": []})
+
+    stored = client.get("/v1/config/llm-capabilities").json()["capabilities"]
+    assert len(stored) == 1
+    assert stored[0]["downgrades"] == []
+
+
+def test_what_was_learned_surfaces_on_the_function_using_that_model(client):
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "deepseek-v4-flash"})
+    client.post(
+        "/v1/config/llm-capabilities",
+        json={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "downgrades": ["tool_choice"],
+            "evidence": "400 Thinking mode does not support this tool_choice",
+        },
+    )
+
+    builder = _function(client, "workflow_builder")
+    assert builder["detected_downgrades"] == ["tool_choice"]
+    assert "Thinking mode" in builder["detected_evidence"]
+
+
+def test_detected_downgrades_are_not_written_into_operator_settings(client):
+    # What the system found out must never be presented as what the
+    # operator asked for.
+    client.put("/v1/config", json={"llm_provider": "deepseek", "llm_model": "m"})
+    client.post(
+        "/v1/config/llm-capabilities",
+        json={"provider": "deepseek", "model": "m", "downgrades": ["tool_choice"]},
+    )
+
+    builder = _function(client, "workflow_builder")
+    assert builder["thinking"] == "auto"  # unchanged by the discovery
+    assert builder["detected_downgrades"] == ["tool_choice"]
+
+
+def _function(client, name: str) -> dict:
+    body = client.get("/v1/config").json()
+    return next(item for item in body["assistants"] if item["function"] == name)
+
+
+def test_a_credential_nested_in_a_rejected_object_is_not_echoed(client):
+    # The field names here are all innocuous, so name-based redaction alone
+    # would return the key: the whole object is echoed when the parent is
+    # rejected.
+    response = client.put(
+        "/v1/config",
+        json={"assistants": {"workflow_builder": {"model": "x", "provider": "sk-live-secret"}}},
+    )
+
+    assert response.status_code == 422
+    assert "sk-live-secret" not in response.text
+    # Still says which function and field were wrong.
+    assert "workflow_builder" in response.text
+
+
+def test_scrubbing_leaves_ordinary_values_readable(client):
+    from aiops_api.modules.config.errors import scrub
+
+    assert scrub({"model": "deepseek-chat"}) == {"model": "deepseek-chat"}
+    assert scrub("unknown assistant functions: ['typo']") == "unknown assistant functions: ['typo']"

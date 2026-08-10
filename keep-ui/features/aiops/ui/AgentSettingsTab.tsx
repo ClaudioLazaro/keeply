@@ -19,7 +19,11 @@ import {
   useLlmProviders,
 } from "@/entities/aiops/model/useAiops";
 import Link from "next/link";
-import { AgentConfigUpdate } from "@/entities/aiops/model/types";
+import {
+  AgentConfigUpdate,
+  AssistantUpdate,
+} from "@/entities/aiops/model/types";
+import { AssistantRoutingSection } from "./AssistantRoutingSection";
 import { ErrorState, LoadingState, PageHeader } from "./shared";
 
 function Section({
@@ -110,6 +114,22 @@ export function AgentSettingsTab() {
 
   const dirty = Object.keys(draft).length > 0;
 
+  /**
+   * Save one feature's routing on its own.
+   *
+   * Sent as a single-key object: the server merges per function, so saving
+   * the builder cannot wipe the incident chat. Kept separate from the main
+   * draft because these cards commit independently of the form below.
+   */
+  async function onSaveAssistant(fn: string, update: AssistantUpdate) {
+    const result = await save({ assistants: { [fn]: update } });
+    setFeedback(
+      result.ok
+        ? { ok: true, message: `Saved routing for ${fn.replace(/_/g, " ")}.` }
+        : { ok: false, message: result.error ?? "Save failed." }
+    );
+  }
+
   async function onSave() {
     const result = await save(draft);
     setFeedback(
@@ -132,7 +152,7 @@ export function AgentSettingsTab() {
     <div>
       <PageHeader
         title="Agent Settings"
-        description="How the investigation agents behave: model routing, cost ceilings, and what they are allowed to run."
+        description="Which model each AI feature uses, how much it may spend, and what it is allowed to run."
       />
 
       {feedback && (
@@ -150,9 +170,16 @@ export function AgentSettingsTab() {
         </Callout>
       )}
 
+      <AssistantRoutingSection
+        config={config}
+        providers={providers}
+        isSaving={isSaving}
+        onSave={onSaveAssistant}
+      />
+
       <Section
-        title="LLM routing"
-        description="Which model writes the RCA draft. Credentials come from the AI provider you install under Providers — there is no second key to manage here."
+        title="Default routing"
+        description="The fallback for every feature above that has not chosen its own. Credentials come from the AI provider you install under Providers — there is no second key to manage here."
       >
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <Badge color={config.llm_enabled ? "emerald" : "gray"} size="xs">

@@ -88,8 +88,41 @@ export interface LlmKeyStatus {
   provider_type: string | null;
 }
 
+export type ThinkingMode = "auto" | "on" | "off";
+
+/**
+ * One AI feature, as resolved for the settings page.
+ *
+ * `inherited` and `detected_downgrades` are deliberately separate kinds of
+ * fact: the first says which values fell through to a default rather than
+ * being chosen, the second says what the system worked out on its own by
+ * being refused. Rendering them the same way would tell the operator they
+ * configured something they never touched.
+ */
+export interface AssistantView {
+  function: string;
+  purpose: string;
+  provider: string | null;
+  model: string | null;
+  thinking: ThinkingMode;
+  /** Field names that came from a default rather than this function. */
+  inherited: string[];
+  /** Compatibility workarounds learned by being refused. */
+  detected_downgrades: string[];
+  /** The provider's verbatim refusal — the cause on record. */
+  detected_evidence: string | null;
+}
+
+export interface AssistantUpdate {
+  provider?: string | null;
+  model?: string | null;
+  thinking?: ThinkingMode;
+}
+
 export interface AgentConfig {
   tenant_id: string;
+  assistants: AssistantView[];
+  available_thinking_modes: ThinkingMode[];
   llm_provider: string | null;
   llm_model: string | null;
   llm_enabled: boolean;
@@ -117,6 +150,8 @@ export interface AgentConfigUpdate {
   llm_embedding_model?: string | null;
   auto_investigate_severities?: string[] | null;
   disabled_specialists?: string[] | null;
+  /** Merged per function server-side, so one card can be saved at a time. */
+  assistants?: Record<string, AssistantUpdate>;
 }
 
 /** An AI provider installed in Keep, offered for LLM routing. */

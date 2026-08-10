@@ -15,6 +15,20 @@ jest.mock("swr", () => ({
 
 const CONFIG: AgentConfig = {
   tenant_id: "*",
+  assistants: [
+    {
+      function: "workflow_builder",
+      purpose: "Drafts and edits workflows in the builder chat",
+      provider: "deepseek",
+      model: "deepseek/deepseek-v4-pro",
+      thinking: "auto",
+      // Nothing set for this feature yet — every field fell through.
+      inherited: ["model", "provider"],
+      detected_downgrades: [],
+      detected_evidence: null,
+    },
+  ],
+  available_thinking_modes: ["auto", "on", "off"],
   llm_provider: "deepseek",
   llm_model: "deepseek/deepseek-v4-pro",
   llm_enabled: true,
@@ -282,7 +296,10 @@ describe("AgentSettingsTab accessibility", () => {
     render(<AgentSettingsTab />);
     // Save stays disabled until something changes, so dirty the form first.
     fireEvent.click(screen.getByRole("button", { name: /critical/i }));
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    // Exact: each AI feature card now has its own Save, so a loose match
+    // would be ambiguous — and would silently start testing a different
+    // button the day the page grows another one.
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(/could not save/i);

@@ -1,6 +1,7 @@
 import { openAiCompatFetch, __testing } from "../openAiCompatFetch";
 
-const { rewriteForCompatibility: rewriteRoles } = __testing;
+const rewriteRoles = (body: string) =>
+  __testing.rewriteForCompatibility(body, new Set(__testing.ALL_DOWNGRADES));
 
 /**
  * The failure this prevents is silent: the AI Summary button produced
@@ -233,5 +234,282 @@ describe("reasoning_content on replayed tool calls", () => {
     );
     expect(out.messages[0]).not.toHaveProperty("reasoning_content");
     expect(out.messages[1]).not.toHaveProperty("reasoning_content");
+  });
+});
+
+
+describe("adapting to what a provider actually refuses", () => {
+  const TOOL_CHOICE_400 =
+    '{"error":{"message":"Thinking mode does not support this tool_choice"}}';
+  const REASONING_400 =
+    '{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API."}}';
+
+  function post(body: unknown) {
+    return {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "content-length": "1" },
+    } as RequestInit;
+  }
+
+  const withToolChoice = {
+    messages: [{ role: "user", content: "hi" }],
+    tool_choice: "required",
+  };
+
+
+  /**
+   * The shim reads exactly three things off a response: `ok`, `status`, and
+   * the body via `clone().text()`. jsdom has no fetch primitives, and
+   * pulling undici in breaks under the jsdom transform — a stub of only
+   * what is used keeps the test honest about the surface it depends on.
+   */
+  class FakeResponse {
+    constructor(
+      readonly body: string,
+      readonly status: number
+    ) {}
+    get ok() {
+      return this.status >= 200 && this.status < 300;
+    }
+    clone() {
+      return this;
+    }
+    async text() {
+      return this.body;
+    }
+  }
+
+  function respond(status: number, body: string) {
+    return new FakeResponse(body, status) as unknown as Response;
+  }
+
+  function stubFetch(responses: Array<{ status: number; body: string }>) {
+    const seen: string[] = [];
+    const fetchMock = jest.fn(async (_url: unknown, init: RequestInit) => {
+      seen.push(String(init.body));
+      const next = responses.shift() ?? { status: 200, body: "{}" };
+      return respond(next.status, next.body);
+    });
+    return { fetchMock: fetchMock as unknown as typeof fetch, seen };
+  }
+
+  it("sends the strong form first and does not weaken a working request", async () => {
+    // The downgrade is a real loss of behaviour, so it must not be paid by
+    // a provider that never asked for it.
+    const { fetchMock, seen } = stubFetch([{ status: 200, body: "{}" }]);
+    await openAiCompatFetch(fetchMock)("/v1/chat", post(withToolChoice));
+
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(seen[0]).tool_choice).toBe("required");
+  });
+
+  it("downgrades and retries when the provider names the reason", async () => {
+    const { fetchMock, seen } = stubFetch([
+      { status: 400, body: TOOL_CHOICE_400 },
+      { status: 200, body: "{}" },
+    ]);
+    const response = await openAiCompatFetch(fetchMock)("/v1/chat", post(withToolChoice));
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(seen[0]).tool_choice).toBe("required");
+    expect(JSON.parse(seen[1]).tool_choice).toBe("auto");
+  });
+
+  it("reports what it learned, with the provider's own words as the cause", async () => {
+    const learned: Array<[string[], string]> = [];
+    const { fetchMock } = stubFetch([
+      { status: 400, body: TOOL_CHOICE_400 },
+      { status: 200, body: "{}" },
+    ]);
+    await openAiCompatFetch(fetchMock, {
+      onLearned: (d, evidence) => learned.push([d, evidence]),
+    })("/v1/chat", post(withToolChoice));
+
+    expect(learned[0][0]).toEqual(["tool_choice"]);
+    expect(learned[0][1]).toContain("Thinking mode");
+  });
+
+  it("does not touch a 400 it does not recognise", async () => {
+    // Silently weakening a request to make an unexplained error disappear
+    // is how a system starts lying about what it did.
+    const { fetchMock, seen } = stubFetch([
+      { status: 400, body: '{"error":{"message":"context length exceeded"}}' },
+    ]);
+    const response = await openAiCompatFetch(fetchMock)("/v1/chat", post(withToolChoice));
+
+    expect(seen).toHaveLength(1);
+    expect(response.status).toBe(400);
+  });
+
+  it("learns one refusal at a time, exactly as this was found in production", async () => {
+    const { fetchMock, seen } = stubFetch([
+      { status: 400, body: TOOL_CHOICE_400 },
+      { status: 400, body: REASONING_400 },
+      { status: 200, body: "{}" },
+    ]);
+    const learned: string[][] = [];
+    const response = await openAiCompatFetch(fetchMock, {
+      onLearned: (d) => learned.push(d),
+    })(
+      "/v1/chat",
+      post({
+        messages: [
+          { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+        ],
+        tool_choice: "required",
+      })
+    );
+
+    expect(response.status).toBe(200);
+    expect(seen).toHaveLength(3);
+    expect(learned[0]).toEqual(["tool_choice", "reasoning_content"]);
+  });
+
+  it("stops instead of looping when the same refusal repeats", async () => {
+    const { fetchMock, seen } = stubFetch([
+      { status: 400, body: TOOL_CHOICE_400 },
+      { status: 400, body: TOOL_CHOICE_400 },
+      { status: 400, body: TOOL_CHOICE_400 },
+    ]);
+    const response = await openAiCompatFetch(fetchMock)("/v1/chat", post(withToolChoice));
+
+    expect(seen).toHaveLength(2); // the try, and one retry
+    expect(response.status).toBe(400);
+  });
+
+  it("starts from what was already learned rather than failing again", async () => {
+    const { fetchMock, seen } = stubFetch([{ status: 200, body: "{}" }]);
+    await openAiCompatFetch(fetchMock, { known: ["tool_choice"] })(
+      "/v1/chat",
+      post(withToolChoice)
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(seen[0]).tool_choice).toBe("auto");
+  });
+
+  it("thinking:off sends the strong form and never adapts", async () => {
+    // The escape hatch for an operator who knows their model is fine.
+    const { fetchMock, seen } = stubFetch([
+      { status: 400, body: TOOL_CHOICE_400 },
+    ]);
+    const response = await openAiCompatFetch(fetchMock, { thinking: "off" })(
+      "/v1/chat",
+      post(withToolChoice)
+    );
+
+    expect(seen).toHaveLength(1);
+    expect(JSON.parse(seen[0]).tool_choice).toBe("required");
+    expect(response.status).toBe(400);
+  });
+
+  it("thinking:on applies everything up front, without a failed round trip", async () => {
+    const { fetchMock, seen } = stubFetch([{ status: 200, body: "{}" }]);
+    await openAiCompatFetch(fetchMock, { thinking: "on" })(
+      "/v1/chat",
+      post({
+        messages: [
+          { role: "developer", content: "sys" },
+          { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+        ],
+        tool_choice: "required",
+      })
+    );
+
+    const sent = JSON.parse(seen[0]);
+    expect(seen).toHaveLength(1);
+    expect(sent.tool_choice).toBe("auto");
+    expect(sent.messages[0].role).toBe("system");
+    expect(sent.messages[1].reasoning_content).toBe("");
+  });
+
+  it("corrects Content-Length when the retry body grows", async () => {
+    // Adding reasoning_content lengthens the body; a stale header stalls
+    // the request with UND_ERR_REQ_CONTENT_LENGTH_MISMATCH.
+    const sentLengths: number[] = [];
+    let call = 0;
+    const fetchWithRetry = (async (_u: unknown, init: RequestInit) => {
+      sentLengths.push(
+        Number(new Headers(init.headers as HeadersInit).get("content-length"))
+      );
+      call += 1;
+      return respond(call === 1 ? 400 : 200, call === 1 ? REASONING_400 : "{}");
+    }) as unknown as typeof fetch;
+
+    await openAiCompatFetch(fetchWithRetry)(
+      "/v1/chat",
+      post({
+        messages: [
+          { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+        ],
+      })
+    );
+
+    expect(sentLengths[1]).toBeGreaterThan(sentLengths[0]);
+  });
+});
+
+
+describe("a workaround with a cost is paid for with evidence", () => {
+  function seenBodies(status = 200) {
+    const seen: string[] = [];
+    const fetchMock = (async (_u: unknown, init: RequestInit) => {
+      seen.push(String(init.body));
+      return {
+        ok: status < 300,
+        status,
+        clone: () => ({ text: async () => "{}" }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { fetchMock, seen };
+  }
+
+  const payload = {
+    messages: [
+      { role: "developer", content: "sys" },
+      { role: "assistant", content: null, tool_calls: [{ id: "c1" }] },
+    ],
+    tool_choice: "required",
+  };
+
+  function post(body: unknown) {
+    return { method: "POST", body: JSON.stringify(body) } as RequestInit;
+  }
+
+  it("translates the role up front, because that costs nothing", async () => {
+    // `developer` exists only on OpenAI's own models and this shim runs
+    // only when we are pointed elsewhere. Waiting for a 400 to learn it
+    // would burn a guaranteed round trip on every first request.
+    const { fetchMock, seen } = seenBodies();
+    await openAiCompatFetch(fetchMock)("/v1/chat", post(payload));
+
+    expect(JSON.parse(seen[0]).messages[0].role).toBe("system");
+  });
+
+  it("does not weaken tool_choice without a refusal", async () => {
+    const { fetchMock, seen } = seenBodies();
+    await openAiCompatFetch(fetchMock)("/v1/chat", post(payload));
+
+    expect(JSON.parse(seen[0]).tool_choice).toBe("required");
+  });
+
+  it("does not add reasoning_content without a refusal", async () => {
+    // A non-thinking model has every right to reject a field it never
+    // asked for.
+    const { fetchMock, seen } = seenBodies();
+    await openAiCompatFetch(fetchMock)("/v1/chat", post(payload));
+
+    expect(JSON.parse(seen[0]).messages[1]).not.toHaveProperty("reasoning_content");
+  });
+
+  it("still translates the role when thinking is switched off", async () => {
+    // Turning off a thinking-mode workaround must not break a request that
+    // was never about thinking mode.
+    const { fetchMock, seen } = seenBodies();
+    await openAiCompatFetch(fetchMock, { thinking: "off" })("/v1/chat", post(payload));
+
+    expect(JSON.parse(seen[0]).messages[0].role).toBe("system");
+    expect(JSON.parse(seen[0]).tool_choice).toBe("required");
   });
 });

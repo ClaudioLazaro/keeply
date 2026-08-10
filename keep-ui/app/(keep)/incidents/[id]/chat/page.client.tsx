@@ -20,7 +20,7 @@ export function IncidentChatClientPage({
   }
 
   return (
-    <CopilotKit showDevConsole={false} runtimeUrl="/api/copilotkit">
+    <CopilotKit showDevConsole={false} runtimeUrl="/api/copilotkit?fn=incident_chat">
       <IncidentChat incident={incident} mutateIncident={mutateIncident} />
     </CopilotKit>
   );

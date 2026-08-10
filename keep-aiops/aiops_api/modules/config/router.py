@@ -22,7 +22,14 @@ from sqlmodel import select
 
 from aiops_api.db import session_scope
 from aiops_api.modules.auth import TenantContext, get_tenant_context
-from aiops_api.modules.config.models import GLOBAL_TENANT, AgentConfig, _utcnow
+from aiops_api.modules.config import capabilities
+from aiops_api.modules.config.models import (
+    ASSISTANT_FUNCTIONS,
+    GLOBAL_TENANT,
+    THINKING_MODES,
+    AgentConfig,
+    _utcnow,
+)
 from aiops_api.modules.config.service import (
     get_effective_config,
     invalidate_cache,
@@ -56,6 +63,56 @@ class AgentConfigUpdate(BaseModel):
     llm_embedding_model: str | None = None
     auto_investigate_severities: list[str] | None = None
     disabled_specialists: list[str] | None = None
+    assistants: dict[str, dict] | None = None
+
+    @field_validator("assistants")
+    @classmethod
+    def _known_functions(cls, value: dict[str, dict] | None) -> dict[str, dict] | None:
+        """Reject unknown functions and modes rather than storing them.
+
+        A typo'd function name would be persisted, rendered in the settings
+        page as a configured feature, and route nothing — the operator would
+        believe they had pointed the builder at a model while the builder
+        went on using the default. Silence is the failure mode worth
+        refusing here.
+        """
+        if value is None:
+            return None
+        unknown = sorted(set(value) - set(ASSISTANT_FUNCTIONS))
+        if unknown:
+            raise ValueError(
+                f"unknown assistant functions: {unknown}; "
+                f"valid: {sorted(ASSISTANT_FUNCTIONS)}"
+            )
+        cleaned: dict[str, dict] = {}
+        for name, entry in value.items():
+            if not isinstance(entry, dict):
+                raise ValueError(f"assistants.{name} must be an object")
+            extra = sorted(set(entry) - {"provider", "model", "thinking"})
+            if extra:
+                raise ValueError(
+                    f"assistants.{name}: unexpected fields {extra}; "
+                    "valid: ['model', 'provider', 'thinking']"
+                )
+            thinking = entry.get("thinking")
+            if thinking not in (None, "", *THINKING_MODES):
+                raise ValueError(
+                    f"assistants.{name}.thinking must be one of {list(THINKING_MODES)}"
+                )
+            for key in ("provider", "model"):
+                candidate = entry.get(key)
+                if candidate is not None and not isinstance(candidate, str):
+                    raise ValueError(f"assistants.{name}.{key} must be a string")
+                # A pasted credential must never reach the database, same
+                # rule as llm_api_key_env.
+                if isinstance(candidate, str) and SECRET_LOOKING.match(candidate):
+                    raise ValueError(f"assistants.{name}.{key} looks like a credential")
+            cleaned[name] = {
+                "provider": (entry.get("provider") or None),
+                "model": (entry.get("model") or None),
+                "thinking": thinking or "auto",
+            }
+        return cleaned
 
     @field_validator("llm_api_key_env")
     @classmethod
@@ -105,6 +162,25 @@ class LlmKeyStatus(BaseModel):
     provider_type: str | None
 
 
+class AssistantView(BaseModel):
+    """One AI feature as the settings page needs to render it.
+
+    Carries the resolved values *and* which of them were inherited, so the
+    page can show "using the default" instead of presenting a fallback as a
+    deliberate choice.
+    """
+
+    function: str
+    purpose: str
+    provider: str | None
+    model: str | None
+    thinking: str
+    inherited: list[str]
+    #: What was learned by trying this model — never what the operator set.
+    detected_downgrades: list[str] = []
+    detected_evidence: str | None = None
+
+
 class AgentConfigResponse(BaseModel):
     """Effective config (row layered over env) plus what can be chosen."""
 
@@ -122,15 +198,45 @@ class AgentConfigResponse(BaseModel):
     disabled_specialists: list[str]
     available_specialists: list[str]
     available_severities: list[str]
+    assistants: list[AssistantView]
+    available_thinking_modes: list[str]
 
 
 def _resolve_tenant(context: TenantContext | None) -> str:
     return context.tenant_id if context is not None else GLOBAL_TENANT
 
 
+def _assistant_views(tenant_id: str, config) -> list[AssistantView]:
+    """Every declared function, configured or not.
+
+    Listed exhaustively on purpose: a feature that routes to an LLM but has
+    never been touched is exactly the one an operator needs to find, and it
+    would be invisible if the list were built from stored keys.
+    """
+    views: list[AssistantView] = []
+    for name, purpose in ASSISTANT_FUNCTIONS.items():
+        routing = config.for_function(name)
+        learned = capabilities.get(tenant_id, routing.provider, routing.model) or {}
+        views.append(
+            AssistantView(
+                function=name,
+                purpose=purpose,
+                provider=routing.provider,
+                model=routing.model,
+                thinking=routing.thinking,
+                inherited=routing.inherited,
+                detected_downgrades=learned.get("downgrades", []),
+                detected_evidence=learned.get("evidence"),
+            )
+        )
+    return views
+
+
 def _response(tenant_id: str) -> AgentConfigResponse:
     config = get_effective_config(tenant_id)
     return AgentConfigResponse(
+        assistants=_assistant_views(tenant_id, config),
+        available_thinking_modes=list(THINKING_MODES),
         tenant_id=tenant_id,
         llm_provider=config.llm_provider,
         llm_model=config.llm_model,
@@ -170,6 +276,15 @@ def update_config(
         if row is None:
             row = AgentConfig(tenant_id=tenant_id)
         for key, value in changes.items():
+            if key == "assistants" and value is not None:
+                # Merged per function, not replaced wholesale: the settings
+                # page saves one card at a time, and a plain assignment
+                # would silently drop every function the form did not
+                # happen to include.
+                merged = dict(row.assistants or {})
+                merged.update(value)
+                row.assistants = merged
+                continue
             setattr(row, key, value)
         row.updated_at = _utcnow()
         session.add(row)
@@ -181,6 +296,50 @@ def update_config(
         extra={"tenant_id": tenant_id, "fields": sorted(changes)},
     )
     return _response(tenant_id)
+
+
+class CapabilityReport(BaseModel):
+    """A client telling us what a model refused, and what worked instead."""
+
+    provider: str | None = None
+    model: str
+    downgrades: list[str] = Field(default_factory=list)
+    #: The provider's verbatim error. Truncated, never invented.
+    evidence: str | None = Field(default=None, max_length=1000)
+
+
+@router.get("/llm-capabilities")
+def list_capabilities(
+    context: TenantContext | None = Depends(get_tenant_context),
+) -> dict:
+    """Everything learned by trying, with the cause on record for each."""
+    tenant_id = _resolve_tenant(context)
+    return {
+        "capabilities": capabilities.list_all(tenant_id),
+        "known_downgrades": list(capabilities.KNOWN_DOWNGRADES),
+    }
+
+
+@router.post("/llm-capabilities")
+def report_capability(
+    body: CapabilityReport,
+    context: TenantContext | None = Depends(get_tenant_context),
+) -> dict:
+    """Record what a model needed so the next request starts there.
+
+    Deliberately tolerant: a failure to learn must never fail the chat that
+    was trying to work. The caller has already recovered by the time it
+    reports, so the worst case is repeating the same discovery next time.
+    """
+    tenant_id = _resolve_tenant(context)
+    stored = capabilities.record(
+        tenant_id,
+        body.provider,
+        body.model,
+        body.downgrades,
+        body.evidence,
+    )
+    return {"recorded": stored is not None, "capability": stored}
 
 
 class LlmTestRequest(BaseModel):

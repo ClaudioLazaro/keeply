@@ -51,6 +51,21 @@ class AgentConfig(SQLModel, table=True):
     # instead of installing a Keep provider. Nothing secret is stored.
     llm_api_key_env: str | None = None
 
+    # --- Per-function assistant routing -----------------------------------
+    # Different AI features have genuinely different needs: drafting a
+    # workflow wants a fast cheap model, writing an RCA wants the strongest
+    # one available. One global choice forces the expensive model on the
+    # cheap job or the weak model on the job that matters.
+    #
+    # Shape: {"workflow_builder": {"provider": "deepseek",
+    #                              "model": "deepseek-chat",
+    #                              "thinking": "auto"}}
+    #
+    # An absent function, or a null field inside one, means "inherit the
+    # tenant default above" — same rule as every other column here, so an
+    # untouched deployment behaves exactly as it did before.
+    assistants: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+
     # --- Cost budget (per investigation) ---------------------------------
     budget_max_tool_calls: int | None = None
     budget_max_wall_time_seconds: float | None = None
@@ -110,4 +125,57 @@ class AgentConfig(SQLModel, table=True):
                 else sorted(settings.auto_investigate_severities)
             ),
             "disabled_specialists": self.disabled_specialists or [],
+            "assistants": self.assistants or {},
         }
+
+
+# Every AI feature that routes to an LLM, and what it is for. Declared here
+# rather than inferred from callers so the settings page can list functions
+# that exist but have never been configured — a feature the operator cannot
+# see is a feature they cannot fix.
+ASSISTANT_FUNCTIONS: dict[str, str] = {
+    "workflow_builder": "Drafts and edits workflows in the builder chat",
+    "incident_chat": "Answers questions about an open incident",
+    "ai_summary": "Summarises alerts and incidents on demand",
+    "rca": "Writes the root-cause analysis for an investigation",
+}
+
+# What an operator may say about thinking mode. `auto` is the default and
+# means "find out" — see LlmCapability.
+THINKING_MODES: tuple[str, ...] = ("auto", "on", "off")
+
+
+class LlmCapability(SQLModel, table=True):
+    """What a model turned out to actually accept, learned by trying.
+
+    Kept apart from :class:`AgentConfig` on purpose. That table is what the
+    operator *chose*; this one is what the system *found out*, and the two
+    must never be shown as the same kind of fact. Writing a discovered
+    downgrade back into the operator's own settings would make the product
+    claim they asked for something they never asked for.
+
+    Every row carries the provider's own error text as the evidence. A
+    downgrade with no recorded cause is indistinguishable from a bug, which
+    is the same standard the evidence provenance work holds elsewhere.
+    """
+
+    __tablename__ = "llm_capability"
+
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    tenant_id: str = Field(default=GLOBAL_TENANT, index=True)
+
+    provider: str = Field(index=True)
+    model: str = Field(index=True)
+
+    # Which compatibility downgrades this model needs, e.g.
+    # ["tool_choice", "reasoning_content"]. Empty means it accepted the
+    # strong form — a useful fact in itself, and the reason this is not
+    # merely an absence of rows.
+    downgrades: list[str] | None = Field(default=None, sa_column=Column(JSON))
+
+    # The provider's verbatim 400, so a surprising downgrade can be read
+    # rather than guessed at.
+    evidence: str | None = None
+
+    observed_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow, sa_column_kwargs={"onupdate": _utcnow})

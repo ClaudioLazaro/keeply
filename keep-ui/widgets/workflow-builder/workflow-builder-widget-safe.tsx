@@ -15,7 +15,7 @@ export function WorkflowBuilderWidgetSafe(props: WorkflowBuilderWidgetProps) {
   }
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit" data-testid="copilot-wrapper">
+    <CopilotKit runtimeUrl="/api/copilotkit?fn=workflow_builder" data-testid="copilot-wrapper">
       <WorkflowBuilderWidget {...props} />
     </CopilotKit>
   );

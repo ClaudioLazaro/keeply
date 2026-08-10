@@ -31,6 +31,18 @@ _cache: dict[str, tuple[float, "EffectiveConfig"]] = {}
 
 
 @dataclass(frozen=True)
+class AssistantRouting:
+    """The resolved answer for one AI feature."""
+
+    function: str
+    provider: str | None
+    model: str | None
+    thinking: str
+    #: Fields that fell through to a default rather than being chosen here.
+    inherited: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class EffectiveConfig:
     """What the agents actually run with, after merging row over env."""
 
@@ -44,6 +56,40 @@ class EffectiveConfig:
     llm_embedding_model: str | None
     auto_investigate_severities: list[str] = field(default_factory=list)
     disabled_specialists: list[str] = field(default_factory=list)
+    assistants: dict[str, Any] = field(default_factory=dict)
+
+    def for_function(self, name: str) -> "AssistantRouting":
+        """How one AI feature should be routed, and where each value came from.
+
+        Layered: the function's own setting, then the tenant default, then
+        env. ``inherited`` names the fields that fell through, because a
+        settings page that shows an inherited value as though it were chosen
+        makes the operator think they set something they did not — and the
+        next person to change the default is then surprised.
+        """
+        override = (self.assistants or {}).get(name) or {}
+        if not isinstance(override, dict):
+            override = {}
+
+        inherited: list[str] = []
+
+        def pick(key: str, fallback: Any) -> Any:
+            value = override.get(key)
+            if value in (None, ""):
+                inherited.append(key)
+                return fallback
+            return value
+
+        return AssistantRouting(
+            function=name,
+            provider=pick("provider", self.llm_provider),
+            model=pick("model", self.llm_model),
+            # Thinking has no tenant-level default: `auto` means the system
+            # works it out, which is the right answer when nobody has an
+            # opinion.
+            thinking=override.get("thinking") or "auto",
+            inherited=sorted(inherited),
+        )
 
     @property
     def llm_api_key(self) -> str:
@@ -121,6 +167,7 @@ def _build(row: AgentConfig | None, settings: Settings) -> EffectiveConfig:
         llm_embedding_model=merged["llm_embedding_model"],
         auto_investigate_severities=list(merged["auto_investigate_severities"]),
         disabled_specialists=list(merged["disabled_specialists"]),
+        assistants=dict(merged["assistants"]),
     )
 
 

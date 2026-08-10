@@ -63,7 +63,7 @@ export function IncidentHeader({
     ?.replace(/^[a-z]/, (match) => match.toUpperCase());
 
   return (
-    <CopilotKit runtimeUrl="/api/copilotkit">
+    <CopilotKit runtimeUrl="/api/copilotkit?fn=ai_summary">
       <header className="flex flex-col mb-1">
         <div className="flex flex-row justify-between items-end mb-2.5">
           <div>
